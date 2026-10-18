@@ -59,7 +59,7 @@ The AI will:
   - Faded mark: standing by (the frontmost app is excluded).
   - The mark with a slash through it (like a "no" sign): paused, not listening.
   - Triangle with an exclamation mark: something went wrong; open the menu to see why.
-- **Bubble next to the cursor**: while you talk it shows what it hears, right under the cursor; when you stop it says it's cleaning up, then "Pasted · 1.7 s" and fades out. Voice commands show each step; if nothing was pasted or something failed, it says why. The bubble never takes focus, and clicks go straight through it.
+- **Bubble next to the cursor**: while you talk it shows what it hears, right under the cursor; when you stop it says it's cleaning up, then "Pasted" and fades out. Voice commands show each step; if nothing was pasted or something failed, it says why. The bubble never takes focus, and clicks go straight through it.
 - **When the cursor isn't in a text field** (you're reading a web page, selecting files in Finder): with auto-focus off, nothing is written, the icon briefly shows a cross, and "Copy last sentence" in the menu gets the text back; with auto-focus on, it picks the right field in the window and writes there.
 - **Meetings**: it doesn't listen while Zoom, Teams, FaceTime or Webex is frontmost. If people are talking nearby or a video is playing, choose "Pause listening" in the menu.
 - **Menu**: pause/resume, copy last sentence, revert to the raw transcript, AI cleanup (off / OpenAI / DeepSeek / Claude), auto-focus, voice commands, edit vocabulary, edit config, help, quit.

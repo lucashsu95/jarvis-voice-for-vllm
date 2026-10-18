@@ -5,7 +5,7 @@
 // 固定寬度、不加字（加字會讓旁邊的圖示跳來跳去），顏色交給系統（範本圖，跟其他選單列圖示同色）。
 // 選單可以切 AI 整理（關／OpenAI／DeepSeek／Claude）、自動找輸入框、語音指令，改的是設定檔，常駐程式會自己換；
 // 「換回原文」把上一段 AI 整理過的字換回轉寫原稿。
-// 游標旁的小框（bubble 事件）：講話中即時顯示聽到的字、整理中、已貼上幾秒、指令做到哪一步、出錯，不搶焦點、滑鼠點不到。
+// 游標旁的小框（bubble 事件）：講話中即時顯示聽到的字、整理中、已貼上、指令做到哪一步、出錯，不搶焦點、滑鼠點不到。
 // BUILD（{ node, repo, state }）由外殼放在全域。
 const LISTEN = `${BUILD.repo}/bin/listen.mjs`;
 const NODE_DIR = BUILD.node.replace(/\/[^/]*$/, '');
@@ -418,11 +418,10 @@ function bubbleContent(e) {
   const green = $.NSColor.systemGreenColor;
   const orange = $.NSColor.systemOrangeColor;
   const step = e.detail ? `\n${e.detail}` : '';
-  const secs = e.seconds ? e.seconds.toFixed(1) : '';
   switch (e.state) {
     case 'hearing': return e.text ? [t('聽到', 'Hearing'), e.text, blue] : [t('聽著…', 'Listening…'), '', blue];
     case 'working': return [t('整理中', 'Cleaning up'), e.text, blue];
-    case 'pasted': return [secs ? t(`已貼上（講完後 ${secs} 秒）`, `Pasted (${secs} s after you stopped)`) : t('已貼上', 'Pasted'), '', green];
+    case 'pasted': return [t('已貼上', 'Pasted'), '', green];
     case 'command': return [t('語音指令', 'Voice command'), `${e.text}${step}`, blue];
     case 'done': return [t('指令完成', 'Command done'), e.text, green];
     case 'failed': return [t('指令沒完成', 'Command not done'), `${e.text}${step}`, orange, true];

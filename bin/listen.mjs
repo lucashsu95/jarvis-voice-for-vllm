@@ -15,8 +15,8 @@
 //   - 字一回來就開始 AI 整理（游標不在輸入框時同時挑好要寫的框）；整理好時已經停了 1.2 秒就直接貼，
 //     又開口就作廢、等整段講完一起整理。
 //   - 轉寫、AI 整理每次同時送兩份，誰先回用誰。
-//   - 游標旁的小框（app/ui.js）：講話中即時顯示聽到的字（本機 SenseVoice 預覽）、整理中、已貼上幾秒、指令、出錯。
-//   每次貼上記一行「速度：講完到貼上 X 秒（字回來、整理好、貼上各花多少）」。
+//   - 游標旁的小框（app/ui.js）：講話中即時顯示聽到的字（本機 SenseVoice 預覽）、整理中、已貼上、指令、出錯。
+//   每次貼上 log 記一行「速度：講完到貼上 X 秒（字回來、整理好、貼上各花多少）」（只記 log，小框不顯示秒數）。
 //
 // 轉寫引擎看設定檔（bin/config.mjs）：local 本機 SenseVoice、openai 自己的 key（預設 gpt-transcribe 一般轉寫，
 // 也可以選 gpt-live-transcribe 即時）、parallelsandbox。設定檔改了會自動換。
@@ -125,18 +125,18 @@ function hudShow(mode) {
 }
 
 // 游標旁的小框（app/ui.js 畫，標題的字也由它照系統語言寫）。state：
-//   hearing（講話中，text 是聽到的字）、working（整理中，text 是轉寫原稿）、pasted（seconds：講完到貼上幾秒）、
+//   hearing（講話中，text 是聽到的字）、working（整理中，text 是轉寫原稿）、pasted、
 //   command（text 是指令，detail 是做到哪一步）、done、failed（detail 是原因）、nofield、error（text 是原因）、hide。
 // at：游標（拿不到就是視窗）在螢幕上的位置 { x, y, w, h, kind: caret | window }（左上角原點），小框放在它下面；null 就放畫面下方中間
 let bubbleKey = '';
 let lastAnchor = null;
 const bubbleOn = () => config.speed.bubble && (appMode || !!process.env.VOICE_DICTATION_HUD);
-function bubble(state, { text = '', detail = '', seconds = null } = {}) {
+function bubble(state, { text = '', detail = '' } = {}) {
   if (!bubbleOn()) return;
-  const key = `${state}|${text}|${detail}|${seconds}|${JSON.stringify(lastAnchor)}`;
+  const key = `${state}|${text}|${detail}|${JSON.stringify(lastAnchor)}`;
   if (key === bubbleKey) return;
   bubbleKey = key;
-  emit({ type: 'bubble', state, text, detail, seconds, at: lastAnchor });
+  emit({ type: 'bubble', state, text, detail, at: lastAnchor });
 }
 
 // 讀到上下文就記下游標在哪，小框跟著放
@@ -978,7 +978,7 @@ async function deliver(item, front) {
   const speed = speedNote(item, prep, pasteStartAt, pastedAt);
   log(`已貼上：${text}`);
   if (speed) log(speed.line);
-  bubble('pasted', { seconds: speed ? Math.round(speed.parts.total / 100) / 10 : null });
+  bubble('pasted');
   emit({ type: 'pasted', text, raw, mode: result?.mode ?? 'insert', ...(speed ? { latencyMs: speed.parts.total, timing: speed.parts } : {}) });
   lastInserted = { pid: front.pid, text, raw, ai: !!result && result.text !== raw };
   if (ctx?.field.editable) rememberedTargets.set(`${front.pid}:${ctx.window}`, { role: ctx.field.role, label: ctx.field.label });
