@@ -167,6 +167,33 @@ test('雙發：誰先成功用誰、其他的取消；一份失敗用另一份�
   assert.equal(core.hedge(plain, 1), plain);
 });
 
+test('雙發：沒有 AbortSignal.any（iOS 17.4 以前的 WebView）也照樣跑，外面取消時兩份都取消', async () => {
+  const any = AbortSignal.any;
+  AbortSignal.any = undefined;
+  try {
+    const aborted = [];
+    let n = 0;
+    const call = ({ signal }) => {
+      const i = n++;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(`第 ${i} 份`), i === 0 ? 50 : 10);
+        signal.addEventListener('abort', () => { clearTimeout(timer); aborted.push(i); reject(new Error('aborted')); });
+      });
+    };
+    assert.equal(await core.hedge(call, 2)({ signal: new AbortController().signal }), '第 1 份');
+    assert.deepEqual(aborted, [0]);
+    aborted.length = 0;
+    n = 0;
+    const outer = new AbortController();
+    const pending = core.hedge(call, 2)({ signal: outer.signal });
+    outer.abort();
+    await assert.rejects(pending, /aborted/);
+    assert.deepEqual(aborted.sort(), [0, 1]);
+  } finally {
+    AbortSignal.any = any;
+  }
+});
+
 test('即時轉寫：連線斷在一句話中間，重連後把還沒轉的聲音補送，舊連線的半句收掉不重複', async () => {
   let urls = 0;
   const { session, items, errors, speak } = startSpeech(async () => `wss://transcribe/${++urls}`);

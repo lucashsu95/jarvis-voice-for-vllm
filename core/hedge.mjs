@@ -5,7 +5,7 @@ export function hedge(call, copies = 2) {
   if (!(copies > 1)) return call;
   return (args = {}) => {
     const controllers = Array.from({ length: copies }, () => new AbortController());
-    const signalFor = (c) => (args.signal ? AbortSignal.any([args.signal, c.signal]) : c.signal);
+    const signalFor = (c) => (args.signal ? eitherSignal(args.signal, c.signal) : c.signal);
     return Promise.any(controllers.map((c, i) => call({ ...args, signal: signalFor(c) }).then((value) => ({ value, i })))).then(
       ({ value, i }) => {
         controllers.forEach((c, j) => { if (j !== i) c.abort(); });
@@ -14,4 +14,15 @@ export function hedge(call, copies = 2) {
       (err) => { throw err?.errors?.[0] ?? err; },
     );
   };
+}
+
+// 兩個 signal 任一個取消就取消。AbortSignal.any 在 iOS 17.4 以前的 WebView 沒有（CubeLV、平行沙盒的手機殼支援到 iOS 15），沒有就自己接
+function eitherSignal(a, b) {
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([a, b]);
+  const controller = new AbortController();
+  for (const s of [a, b]) {
+    if (s.aborted) { controller.abort(s.reason); break; }
+    s.addEventListener('abort', () => controller.abort(s.reason), { once: true });
+  }
+  return controller.signal;
 }
