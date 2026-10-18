@@ -4,13 +4,14 @@
 // 圖示平常是「JarvisVoice」標誌：單循環箭頭包住三條聲波（自動＋聲音）；有事時整個換成大圖（看「選單列圖示」那段）。
 // 固定寬度、不加字（加字會讓旁邊的圖示跳來跳去），顏色交給系統（範本圖，跟其他選單列圖示同色）。
 // 選單可以切轉寫（本機／OpenAI／CubeLV／平行沙盒）、AI 整理（關／OpenAI／DeepSeek／Claude／CubeLV）、自動找輸入框、語音指令，
-// 改的是設定檔，常駐程式會自己換；「用 CubeLV 登入…」帶起 bin/cubelv-login.mjs（瀏覽器登入，不用 key、扣 CubeLV 點數），
-// 跟自己的 key、本機辨識並列，不是預設；
+// 改的是設定檔，常駐程式會自己換；「設定自己的 key…」選一家、在對話框貼 key，帶起 bin/set-key.mjs 先測一次、通了才存進鑰匙圈；
+// 「用 CubeLV 登入…」帶起 bin/cubelv-login.mjs（瀏覽器登入，不用 key、扣 CubeLV 點數），跟自己的 key、本機辨識並列，不是預設；
 // 「換回原文」把上一段 AI 整理過的字換回轉寫原稿。
 // 游標旁的小框（bubble 事件）：講話中即時顯示聽到的字、整理中、已貼上、指令做到哪一步、出錯，不搶焦點、滑鼠點不到。
 // BUILD（{ node, repo, state }）由外殼放在全域。
 const LISTEN = `${BUILD.repo}/bin/listen.mjs`;
 const LOGIN = `${BUILD.repo}/bin/cubelv-login.mjs`;
+const SET_KEY = `${BUILD.repo}/bin/set-key.mjs`;
 const NODE_DIR = BUILD.node.replace(/\/[^/]*$/, '');
 // 系統語言是中文就顯示中文，其他都用英文（VOICE_DICTATION_LANG 可以指定，測試用）
 const LANG = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('VOICE_DICTATION_LANG'))
@@ -27,6 +28,27 @@ const ENGINE_ITEMS = {
 };
 const GUIDE_URL = 'https://github.com/urusaqqrun/jarvis-voice#readme';
 const AI_NAMES = { openai: 'OpenAI', deepseek: 'DeepSeek', claude: 'Claude', cubelv: 'CubeLV' };
+// 「設定自己的 key…」可以設定的幾家：用在哪、去哪裡建立、key 長什麼樣（id 跟 bin/own-keys.mjs 一樣）
+const KEY_PROVIDERS = {
+  openai: {
+    name: 'OpenAI', use: t('轉寫與 AI 整理', 'transcription and AI cleanup'), where: 'https://platform.openai.com/api-keys', hint: 'sk-…',
+    about: t('同一把 key 用在轉寫與 AI 整理。OpenAI 轉寫比本機辨識準，照錄音分鐘計費；不勾下面的選項，轉寫就維持現在的設定。',
+      'One key covers transcription and AI cleanup. OpenAI transcription is more accurate than on-device and is billed per recorded minute; leave the box below unchecked to keep your current transcription.'),
+  },
+  deepseek: {
+    name: 'DeepSeek', use: t('AI 整理', 'AI cleanup'), where: 'https://platform.deepseek.com/api_keys', hint: 'sk-…',
+    about: t('用在 AI 整理（最快）。要先在 DeepSeek 儲值。', 'Used for AI cleanup (the fastest). Top up your DeepSeek account first.'),
+  },
+  claude: {
+    name: 'Claude', use: t('AI 整理', 'AI cleanup'), where: 'https://console.anthropic.com/settings/keys', hint: 'sk-ant-…',
+    about: t('用在 AI 整理。', 'Used for AI cleanup.'),
+  },
+  jev: {
+    name: 'TypeSafe Jev', use: t('語音指令判斷，選用', 'voice-command decisions, optional'), where: 'https://typesafe.ai', hint: '',
+    about: t('選用：自動找輸入框與語音指令的判斷，一步約 0.2 秒；沒有也能用（改問 AI 整理那家，一步約 1 秒）。',
+      'Optional: decides auto-focus and voice commands in about 0.2 s per step; without it, your AI cleanup provider decides (about 1 s per step).'),
+  },
+};
 
 let statusItem = null;
 let statusLine = null;
@@ -53,6 +75,13 @@ let cubelvItem = null;
 let loginTask = null; // 正在跑的 bin/cubelv-login.mjs
 let loginKind = ''; // in（登入中）| out（登出中）
 let loginBuffer = '';
+let keysItem = null;
+let keyTask = null; // 正在跑的 bin/set-key.mjs
+let keyKind = ''; // set（測試中）| clear（清除中）
+let keyProvider = '';
+let keyBuffer = '';
+let keyResult = null; // set-key.mjs 最後報的結果（saved／cleared／error），程式結束時才跳對話框
+let keyParts = { out: false, task: false }; // 輸出讀完了沒、程式結束了沒：兩個都到才跳結果（結束的通知可能比最後一行輸出先到）
 let aiMenuItem = null;
 let aiOffItem = null;
 const aiItems = {};
@@ -255,6 +284,7 @@ function uiSnapshot() {
     commands: ObjC.unwrap(commandsItem.title),
     engine: ObjC.unwrap(engineMenuItem.title),
     cubelv: ObjC.unwrap(cubelvItem.title),
+    keys: ObjC.unwrap(keysItem.title),
   };
 }
 
@@ -294,7 +324,7 @@ function refresh() {
 }
 
 function refreshSettings() {
-  if (!aiMenuItem || !cubelvItem) return;
+  if (!aiMenuItem || !cubelvItem || !keysItem) return;
   const { ai } = settings;
   const signedOut = t('（未登入）', ' (not signed in)');
   const missing = ai.provider === 'cubelv' ? signedOut : t('（沒有 key）', ' (no key)');
@@ -309,6 +339,10 @@ function refreshSettings() {
         ? t(`登出 CubeLV${settings.cubelv.email ? `（${settings.cubelv.email}）` : ''}`, `Sign out of CubeLV${settings.cubelv.email ? ` (${settings.cubelv.email})` : ''}`)
         : t('用 CubeLV 登入…（不用 key，扣 CubeLV 點數）', 'Sign in with CubeLV… (no key, uses CubeLV credits)'));
   cubelvItem.setEnabled(loginKind !== 'out');
+  const keyName = KEY_PROVIDERS[keyProvider]?.name ?? '';
+  keysItem.setTitle(keyKind === 'set' ? t(`測試 ${keyName} 的 key 中…`, `Testing your ${keyName} key…`)
+    : keyKind === 'clear' ? t(`清除 ${keyName} 的 key 中…`, `Removing your ${keyName} key…`) : t('設定自己的 key…', 'Set up your own key…'));
+  keysItem.setEnabled(!keyTask);
   aiOffItem.setState(ai.enabled ? 0 : 1);
   for (const [provider, item] of Object.entries(aiItems)) item.setState(ai.enabled && ai.provider === provider ? 1 : 0);
   autoFocusItem.setState(settings.autoFocus ? 1 : 0);
@@ -336,6 +370,8 @@ function updateConfig(change) {
 function chooseAi(provider) {
   // 還沒登入就選 CubeLV：先登入，登入成功才把 AI 整理切過去（轉寫不動）
   if (provider === 'cubelv' && !settings.cubelv.loggedIn) { runLogin(['--use', 'ai']); return; }
+  // 選了還沒有 key 的那家：先貼 key，測通了才把 AI 整理切過去（常駐程式沒報各家的 key 時照舊直接切）
+  if (KEY_PROVIDERS[provider] && settings.keys && !settings.keys[provider]) { setUpKey(provider, { ai: true }); return; }
   updateConfig((config) => {
     config.ai = config.ai ?? {};
     config.ai.enabled = !!provider;
@@ -345,6 +381,7 @@ function chooseAi(provider) {
 
 function chooseEngine(engine) {
   if (engine === 'cubelv' && !settings.cubelv.loggedIn) { runLogin(['--use', 'engine']); return; }
+  if (engine === 'openai' && settings.keys && !settings.keys.openai) { setUpKey('openai', { engine: true }); return; }
   updateConfig((config) => { config.engine = engine; });
 }
 
@@ -358,17 +395,22 @@ function showAlert(title, text) {
   alert.runModal;
 }
 
+// 帶起 bin/ 裡的程式用的環境：找得到 node、ffmpeg，狀態資料夾跟小程式同一個，提示跟選單同一種語言（從 Finder 開的 app 沒有 LANG）
+function childEnv() {
+  const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
+  env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
+  env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
+  env.setObjectForKey($(ZH ? 'zh' : 'en'), $('VOICE_DICTATION_LANG'));
+  return env;
+}
+
 function runLogin(args) {
   if (loginTask) return;
   try {
     const task = $.NSTask.alloc.init;
     task.setLaunchPath(BUILD.node);
     task.setArguments($([LOGIN, ...args]));
-    const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
-    env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
-    env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
-    env.setObjectForKey($(ZH ? 'zh' : 'en'), $('VOICE_DICTATION_LANG'));
-    task.setEnvironment(env);
+    task.setEnvironment(childEnv());
     const pipe = $.NSPipe.pipe;
     task.setStandardOutput(pipe);
     task.setStandardError($.NSFileHandle.fileHandleWithNullDevice);
@@ -417,6 +459,182 @@ function onLoginEnded() {
   loginTask = null;
   loginKind = '';
   refreshSettings();
+}
+
+// ── 設定自己的 key：選一家 → 對話框貼 key → 帶起 bin/set-key.mjs 實際測一次，通了才存進鑰匙圈並切過去 ──
+
+// 純選單列的 app 沒有「編輯」選單，對話框裡的 Cmd+V、Cmd+A 不會動：補一個看不到的編輯選單，key 才貼得進去
+let editMenuReady = false;
+function ensureEditMenu() {
+  if (editMenuReady) return;
+  editMenuReady = true;
+  const app = $.NSApplication.sharedApplication;
+  let main = app.mainMenu;
+  if (!main || main.isNil()) { main = $.NSMenu.alloc.init; app.setMainMenu(main); }
+  const edit = $.NSMenu.alloc.initWithTitle(t('編輯', 'Edit'));
+  [[t('還原', 'Undo'), 'undo:', 'z'], [t('剪下', 'Cut'), 'cut:', 'x'], [t('拷貝', 'Copy'), 'copy:', 'c'], [t('貼上', 'Paste'), 'paste:', 'v'], [t('全選', 'Select All'), 'selectAll:', 'a']]
+    .forEach(([title, action, key]) => edit.addItem($.NSMenuItem.alloc.initWithTitleActionKeyEquivalent(title, action, key)));
+  const holder = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent(t('編輯', 'Edit'), null, '');
+  holder.setSubmenu(edit);
+  main.addItem(holder);
+}
+
+// 選單存了哪幾家的 key（bin/own-keys.mjs 記的索引，不是秘密）
+function savedKeys() {
+  const text = $.NSString.stringWithContentsOfFileEncodingError(statePath('own-keys.json'), $.NSUTF8StringEncoding, null);
+  if (!text || text.isNil()) return {};
+  try { return JSON.parse(ObjC.unwrap(text)) || {}; } catch (err) { return {}; }
+}
+
+// 第一步：選要設定哪一家；取消回空字串
+function chooseKeyProvider() {
+  const saved = savedKeys();
+  const ids = Object.keys(KEY_PROVIDERS);
+  const alert = $.NSAlert.alloc.init;
+  alert.setMessageText(t('設定自己的 key', 'Set up your own key'));
+  alert.setInformativeText(t('選要設定哪一家。貼上的 key 會先實際測一次，通了才存進 macOS 鑰匙圈（不寫進設定檔）。',
+    'Choose a provider. Your key is tested first and saved to the macOS Keychain only if it works (never to the config file).'));
+  const popup = $.NSPopUpButton.alloc.initWithFramePullsDown($.NSMakeRect(0, 0, 340, 26), false);
+  for (const id of ids) {
+    const p = KEY_PROVIDERS[id];
+    popup.addItemWithTitle(`${p.name}${t(`（${p.use}${saved[id] ? '，已設定' : ''}）`, ` (${p.use}${saved[id] ? ', saved' : ''})`)}`);
+  }
+  // 預設選 AI 整理正在用、卻還沒有 key 的那家
+  const current = ids.indexOf(settings.ai.provider);
+  if (current >= 0 && settings.ai.enabled && !settings.ai.ready) popup.selectItemAtIndex(current);
+  alert.setAccessoryView(popup);
+  alert.addButtonWithTitle(t('下一步', 'Next'));
+  alert.addButtonWithTitle(t('取消', 'Cancel'));
+  $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+  if (Number(alert.runModal) !== 1000) return ''; // 1000：第一個按鈕
+  return ids[Number(popup.indexOfSelectedItem)] || '';
+}
+
+// 第二步：貼 key 的對話框（畫面不顯示 key）。回 { key, engine }、{ clear: true }，取消回 null。
+// OpenAI 多一個「轉寫也改用 OpenAI」：預設不勾（從「轉寫」子選單選 OpenAI 進來的才預先勾），不動本機辨識
+function askKey(id, { engine = false } = {}) {
+  const p = KEY_PROVIDERS[id];
+  const saved = !!savedKeys()[id];
+  const alert = $.NSAlert.alloc.init;
+  alert.setMessageText(t(`貼上 ${p.name} 的 key`, `Paste your ${p.name} key`));
+  alert.setInformativeText([
+    p.about,
+    t(`到 ${p.where} 建立。`, `Create one at ${p.where}.`),
+    t('按「測試並儲存」會先實際打一次，通了才存進 macOS 鑰匙圈；不通就說原因、不存。', 'Test and Save calls the provider once first; the key is saved to the macOS Keychain only if it works.'),
+    ...(saved ? [t('已經存了一把：貼新的會換掉，或按「清除已存的 key」。', 'A key is already saved: paste a new one to replace it, or choose Remove Saved Key.')] : []),
+  ].join('\n\n'));
+  const width = 340;
+  const askEngine = id === 'openai' && settings.engine !== 'openai';
+  const height = askEngine ? 58 : 24;
+  const box = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, width, height));
+  const field = $.NSSecureTextField.alloc.initWithFrame($.NSMakeRect(0, height - 24, width, 24));
+  field.setPlaceholderString(p.hint || t('貼上 key', 'Paste your key'));
+  box.addSubview(field);
+  let check = null;
+  if (askEngine) {
+    check = $.NSButton.alloc.initWithFrame($.NSMakeRect(0, 0, width, 22));
+    check.setButtonType(3); // NSButtonTypeSwitch：勾選框
+    check.setTitle(t(`轉寫也改用 OpenAI（目前：${ENGINE_NAMES[settings.engine] ?? settings.engine}）`, `Also use OpenAI for transcription (now: ${ENGINE_NAMES[settings.engine] ?? settings.engine})`));
+    check.setState(engine ? 1 : 0);
+    box.addSubview(check);
+  }
+  alert.setAccessoryView(box);
+  alert.addButtonWithTitle(t('測試並儲存', 'Test and Save'));
+  alert.addButtonWithTitle(t('取消', 'Cancel'));
+  if (saved) alert.addButtonWithTitle(t('清除已存的 key', 'Remove Saved Key'));
+  alert.window.setInitialFirstResponder(field);
+  $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+  const choice = Number(alert.runModal);
+  if (choice === 1002) return { clear: true };
+  if (choice !== 1000) return null;
+  return { key: ObjC.unwrap(field.stringValue) || '', engine: !!check && Number(check.state) === 1 };
+}
+
+// 選單「設定自己的 key…」（id 空的就先問哪一家）；從「AI 整理」「轉寫」選了沒有 key 的那家時直接帶 id 進來：
+// ai：測通了一定把 AI 整理切過去；engine：OpenAI 的「轉寫也改用 OpenAI」預先勾
+function setUpKey(id = '', { ai = false, engine = false } = {}) {
+  if (keyTask) return;
+  ensureEditMenu();
+  const chosen = id || chooseKeyProvider();
+  if (!chosen) return;
+  const answer = askKey(chosen, { engine });
+  if (!answer) return;
+  if (answer.clear) { runKeyTask(['clear', chosen], chosen, ''); return; }
+  if (!answer.key.trim()) { showAlert(t('key 沒有存', 'Key not saved'), t('沒有貼上 key。', 'No key was pasted.')); return; }
+  runKeyTask(['set', chosen, ...(answer.engine ? ['--engine'] : []), ...(ai ? ['--ai'] : [])], chosen, answer.key);
+}
+
+function runKeyTask(args, provider, key) {
+  try {
+    const task = $.NSTask.alloc.init;
+    task.setLaunchPath(BUILD.node);
+    task.setArguments($([SET_KEY, ...args]));
+    task.setEnvironment(childEnv());
+    const out = $.NSPipe.pipe;
+    const input = $.NSPipe.pipe;
+    task.setStandardOutput(out);
+    task.setStandardInput(input);
+    task.setStandardError($.NSFileHandle.fileHandleWithNullDevice);
+    const reader = out.fileHandleForReading;
+    const center = $.NSNotificationCenter.defaultCenter;
+    center.addObserverSelectorNameObject(controller, 'keyOut:', $.NSFileHandleReadCompletionNotification, reader);
+    center.addObserverSelectorNameObject(controller, 'keyEnded:', $.NSTaskDidTerminateNotification, task);
+    reader.readInBackgroundAndNotify;
+    task.launch;
+    // key 從管子送進去，不放在參數裡（參數 ps 看得到）
+    const writer = input.fileHandleForWriting;
+    writer.writeData($(key).dataUsingEncoding($.NSUTF8StringEncoding));
+    writer.closeFile;
+    keyTask = task;
+    keyKind = args[0];
+    keyProvider = provider;
+    keyBuffer = '';
+    keyResult = null;
+    keyParts = { out: false, task: false };
+  } catch (err) {
+    showAlert(t('設定 key 的程式開不起來', "Couldn't start key setup"), String(err));
+  }
+  refreshSettings();
+}
+
+function onKeyLine(line) {
+  let event;
+  try { event = JSON.parse(line); } catch (err) { return; }
+  if (event.type === 'key' && ['saved', 'cleared', 'error'].includes(event.state)) keyResult = event;
+}
+
+function onKeyOut(note) {
+  const data = note.userInfo.objectForKey($.NSFileHandleNotificationDataItem);
+  if (!data || Number(data.length) === 0) { keyDone('out'); return; } // 輸出讀完了
+  keyBuffer += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding)) || '';
+  const lines = keyBuffer.split('\n');
+  keyBuffer = lines.pop();
+  for (const line of lines) if (line.trim()) onKeyLine(line.trim());
+  note.object.readInBackgroundAndNotify;
+}
+
+// 程式結束了：等輸出讀完；2 秒還沒讀完就不等了
+function onKeyEnded() {
+  keyDone('task');
+  $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(2, controller, 'keyLate:', $(), false);
+}
+
+// 輸出讀完、程式也結束了：選單先換回「設定自己的 key…」，再跳結果（通了說「已設定，可以用了」，不通說原因）
+function keyDone(part) {
+  if (!keyTask) return;
+  keyParts[part] = true;
+  if (!keyParts.out || !keyParts.task) return;
+  if (keyBuffer.trim()) onKeyLine(keyBuffer.trim());
+  const result = keyResult;
+  keyBuffer = '';
+  keyTask = null;
+  keyKind = '';
+  keyProvider = '';
+  keyResult = null;
+  refreshSettings();
+  if (result?.state === 'saved') showAlert(t('已設定，可以用了', "You're all set"), result.message);
+  else if (result?.state === 'cleared') showAlert(t('已清除', 'Removed'), result.message);
+  else showAlert(t('key 沒有存', 'Key not saved'), result?.message || t('設定 key 的程式沒有回報就結束了，再試一次。', 'Key setup ended without a result; try again.'));
 }
 
 // 開關型的設定（autoFocus、commands）：照常駐程式目前報的狀態反過來
@@ -696,11 +914,7 @@ function startListener() {
     const t = $.NSTask.alloc.init;
     t.setLaunchPath(BUILD.node);
     t.setArguments($([LISTEN, '--app']));
-    const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
-    env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
-    env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
-    env.setObjectForKey($(ZH ? 'zh' : 'en'), $('VOICE_DICTATION_LANG')); // CubeLV 的提示跟選單同一種語言（從 Finder 開的 app 沒有 LANG）
-    t.setEnvironment(env);
+    t.setEnvironment(childEnv());
     const pipe = $.NSPipe.pipe;
     t.setStandardOutput(pipe);
     t.setStandardError($.NSFileHandle.fileHandleWithNullDevice);
@@ -722,6 +936,7 @@ function quitApp() {
   quitting = true;
   if (task) task.terminate;
   if (loginTask) loginTask.terminate;
+  if (keyTask) keyTask.terminate;
   $.NSApplication.sharedApplication.terminate($());
 }
 
@@ -766,6 +981,10 @@ ObjC.registerSubclass({
     'cubelvLogin:': { types: ['void', ['id']], implementation() { cubelvAction(); } },
     'loginOut:': { types: ['void', ['id']], implementation(note) { onLoginOut(note); } },
     'loginEnded:': { types: ['void', ['id']], implementation() { onLoginEnded(); } },
+    'ownKeys:': { types: ['void', ['id']], implementation() { setUpKey(); } },
+    'keyOut:': { types: ['void', ['id']], implementation(note) { onKeyOut(note); } },
+    'keyEnded:': { types: ['void', ['id']], implementation() { onKeyEnded(); } },
+    'keyLate:': { types: ['void', ['id']], implementation() { if (keyParts.task) keyDone('out'); } },
     'toggleAutoFocus:': { types: ['void', ['id']], implementation() { toggleSetting('autoFocus'); } },
     'toggleCommands:': { types: ['void', ['id']], implementation() { toggleSetting('commands'); } },
     'revert:': { types: ['void', ['id']], implementation() { requestRevert(); } },
@@ -836,6 +1055,8 @@ function startUI() {
   menu.addItem($.NSMenuItem.separatorItem);
   menu.addItem(menuItem(t('編輯專有名詞…', 'Edit vocabulary…'), 'openVocabulary:'));
   menu.addItem(menuItem(t('編輯設定檔…', 'Edit config…'), 'openConfig:'));
+  keysItem = menuItem(t('設定自己的 key…', 'Set up your own key…'), 'ownKeys:');
+  menu.addItem(keysItem);
   cubelvItem = menuItem(t('用 CubeLV 登入…', 'Sign in with CubeLV…'), 'cubelvLogin:');
   menu.addItem(cubelvItem);
   menu.addItem(menuItem(t('說明', 'Help'), 'openGuide:'));

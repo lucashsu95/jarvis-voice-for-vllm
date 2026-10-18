@@ -175,6 +175,8 @@ function announceSettings() {
     commands: config.commands,
     decider: deciderName,
     cubelv: { loggedIn: !!account, email: account?.email ?? '' },
+    // 各家有沒有 key（哪裡設的都算）：選單選了沒有 key 的那家，直接開「設定自己的 key…」的對話框
+    keys: { openai: !!aiKey(config, 'openai'), deepseek: !!aiKey(config, 'deepseek'), claude: !!aiKey(config, 'claude'), jev: !!config.jev.apiKey },
   });
   const missing = provider === 'cubelv' ? '，但還沒用 CubeLV 登入，先不整理' : '，但沒有 key，先不整理';
   log(`AI 整理：${config.ai.enabled ? `${PROVIDER_NAMES[provider]}（${model}）${aiReady() ? '' : missing}` : '關'}；`

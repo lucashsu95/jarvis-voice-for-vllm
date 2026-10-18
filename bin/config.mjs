@@ -1,4 +1,6 @@
 // 設定：~/.voice-dictation/config.json（VOICE_DICTATION_CONFIG 可指定別的檔），沒寫的照預設。
+// 自己的 key 最簡單是從選單「設定自己的 key…」貼（存在鑰匙圈，不在這個檔，見 bin/own-keys.mjs）；讀 key 時它最優先，
+// 再來才是這個檔的 apiKey／keys、apiKeyFile／keyFiles、keyCommands、環境變數。
 //
 // {
 //   "engine": "local",                 // local（本機 SenseVoice，免費）| openai（自己的 OpenAI key）| cubelv（用 CubeLV 登入，扣點數）| parallelsandbox
@@ -51,6 +53,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { OWN_KEYS_FILE, ownKeyStore } from './own-keys.mjs';
 
 export const STATE_DIR = process.env.VOICE_DICTATION_STATE_DIR || join(homedir(), '.voice-dictation');
 export const CONFIG_PATH = process.env.VOICE_DICTATION_CONFIG || join(STATE_DIR, 'config.json');
@@ -58,6 +61,7 @@ export const DEFAULT_MODEL = 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-
 export const ENGINES = ['local', 'openai', 'cubelv', 'parallelsandbox'];
 export const AI_PROVIDERS = ['openai', 'deepseek', 'claude', 'cubelv'];
 export const CUBELV_ACCOUNT = join(STATE_DIR, 'cubelv-account.json');
+export const OWN_KEYS = join(STATE_DIR, OWN_KEYS_FILE); // 選單存了哪幾家的 key（不是秘密，key 在鑰匙圈）
 const KEY_VARS = { openai: 'OPENAI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', claude: 'ANTHROPIC_API_KEY' };
 
 // 各類 app 的語氣：bundle id 或網域都可以當 key
@@ -196,11 +200,11 @@ export function aiAvailable(config, provider = config.ai.provider) {
   return provider === 'cubelv' ? !!cubelvAccount(config) : !!aiKey(config, provider);
 }
 
-// AI 整理用哪把 key：設定檔 keys → keyFiles → keyCommands → 環境變數；OpenAI 沿用轉寫的 key（CubeLV 不用 key）
+// AI 整理用哪把 key：選單存的（鑰匙圈）→ 設定檔 keys → keyFiles → keyCommands → 環境變數；OpenAI 沿用轉寫的 key（CubeLV 不用 key）
 export function aiKey(config, provider = config.ai.provider) {
   if (provider === 'cubelv') return '';
   const ai = config.ai;
-  return ai.keys?.[provider] || keyFromFile(ai.keyFiles?.[provider], KEY_VARS[provider]) || keyFromCommand(ai.keyCommands?.[provider])
+  return config.ownKeys?.[provider] || ai.keys?.[provider] || keyFromFile(ai.keyFiles?.[provider], KEY_VARS[provider]) || keyFromCommand(ai.keyCommands?.[provider])
     || process.env[KEY_VARS[provider]] || (provider === 'openai' ? config.openai.apiKey : '') || '';
 }
 
@@ -223,9 +227,9 @@ const mtime = (file) => {
   try { return statSync(file.replace(/^~(?=\/)/, homedir())).mtimeMs; } catch { return 0; }
 };
 
-// 設定檔、詞彙檔或 CubeLV 登入狀態有改就換新設定
+// 設定檔、詞彙檔、CubeLV 登入狀態或選單存的 key 有改就換新設定
 export function configMtime(config) {
-  return `${mtime(CONFIG_PATH)}:${config?.openai?.vocabularyFile ? mtime(config.openai.vocabularyFile) : 0}:${mtime(CUBELV_ACCOUNT)}`;
+  return `${mtime(CONFIG_PATH)}:${config?.openai?.vocabularyFile ? mtime(config.openai.vocabularyFile) : 0}:${mtime(CUBELV_ACCOUNT)}:${mtime(OWN_KEYS)}`;
 }
 
 // 回傳 { config, error }：設定檔壞掉時照預設跑，error 說哪裡壞。
@@ -254,7 +258,9 @@ export function loadConfig() {
   }
   if (!Array.isArray(config.apps) || !config.apps.length) config.apps = base.apps;
   if (!Array.isArray(config.excludeApps)) config.excludeApps = base.excludeApps;
-  config.openai.apiKey = config.openai.apiKey || keyFromFile(config.openai.apiKeyFile) || process.env.OPENAI_API_KEY || '';
+  // 選單「設定自己的 key…」存在鑰匙圈的 key：最優先（沒存過就是空的，照舊讀設定檔與環境變數）
+  config.ownKeys = ownKeyStore(STATE_DIR).readAll();
+  config.openai.apiKey = config.ownKeys.openai || config.openai.apiKey || keyFromFile(config.openai.apiKeyFile) || process.env.OPENAI_API_KEY || '';
   if (config.openai.apiKeyFile && !config.openai.apiKey) error = `讀不到 openai.apiKeyFile：${config.openai.apiKeyFile}`;
   config.openai.keywords = cleanKeywords([...(config.openai.keywords ?? []), ...readVocabulary(config.openai.vocabularyFile)]);
   const langs = Array.isArray(config.openai.languages) ? config.openai.languages : [];
@@ -268,7 +274,7 @@ export function loadConfig() {
   config.commands = config.commands !== false;
   // 沒指定 AI 用哪家：挑已經有 key 的
   if (!file.ai?.provider) config.ai.provider = ['deepseek', 'claude', 'openai'].find((p) => aiKey(config, p)) ?? base.ai.provider;
-  config.jev.apiKey = config.jev.apiKey || keyFromFile(config.jev.apiKeyFile, 'TYPESAFE_API_KEY') || keyFromCommand(config.jev.apiKeyCommand)
+  config.jev.apiKey = config.ownKeys.jev || config.jev.apiKey || keyFromFile(config.jev.apiKeyFile, 'TYPESAFE_API_KEY') || keyFromCommand(config.jev.apiKeyCommand)
     || process.env.TYPESAFE_API_KEY || '';
   const ps = parallelSandboxFromClaudeJson();
   config.parallelsandbox.apiKey = config.parallelsandbox.apiKey || process.env.PARALLELSANDBOX_API_KEY || ps.apiKey || '';

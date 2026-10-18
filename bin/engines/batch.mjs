@@ -140,7 +140,7 @@ export function createBatchEngine({ apiKey, model = 'gpt-transcribe', languages 
       const sent = early;
       early = null;
       if (!apiKey) {
-        onError('沒有 OpenAI API key（設定檔 openai.apiKey、openai.apiKeyFile，或環境變數 OPENAI_API_KEY）');
+        onError('沒有 OpenAI API key：從選單「設定自己的 key…」貼上（或設定檔 openai.apiKey、openai.apiKeyFile、環境變數 OPENAI_API_KEY）');
         return;
       }
       if (pcm.length < MIN_BYTES) {

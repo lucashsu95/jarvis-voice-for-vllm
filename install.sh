@@ -82,8 +82,8 @@ if (engine === 'openai' && process.env.OPENAI_API_KEY && !config.openai?.apiKey 
 fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 fs.chmodSync(file, 0o600);
 EOF
-if [[ "$ENGINE" == openai ]] && ! grep -q '"apiKey": "sk-\|"apiKeyFile"' "$CONFIG" && [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  note "還沒有 OpenAI key：在 $CONFIG 的 openai 裡加上 \"apiKey\": \"sk-...\"，或 \"apiKeyFile\": \"放 key 的檔案路徑\""
+if [[ "$ENGINE" == openai ]] && ! grep -q '"apiKey": "sk-\|"apiKeyFile"' "$CONFIG" && ! grep -qs '"openai"' "$STATE/own-keys.json" && [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  note "還沒有 OpenAI key：裝好後點選單列的 JarvisVoice →「設定自己的 key…」選 OpenAI 貼上；或在 $CONFIG 的 openai 裡加上 \"apiKeyFile\": \"放 key 的檔案路徑\""
 fi
 
 # 舊版註冊在 Claude Code 的 plugin 拿掉

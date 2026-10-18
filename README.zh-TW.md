@@ -39,18 +39,18 @@ cd ~/jarvis-voice
 轉寫與 AI 整理用哪一種，三種擇一，之後隨時可以從選單換：
 
 - **本機辨識**：免費，聲音不離開你的電腦（`./install.sh local`）。
-- **自己的 key**：OpenAI 轉寫最準；AI 整理可以選 OpenAI、DeepSeek、Claude。key 由你自己保管：第二步請 AI 幫你放（key 由你自己在終端機貼，AI 不經手），或自己在 `~/.voice-dictation/config.json` 的 `openai` 裡加 `"apiKeyFile": "放 key 的檔案"`。
+- **自己的 key**：OpenAI 轉寫最準；AI 整理可以選 OpenAI、DeepSeek、Claude。從選單按「設定自己的 key…」，選哪一家、貼上 key 就好：會先實際測一次，通了才存進 macOS 鑰匙圈（不寫進設定檔），並把 AI 整理切到那家；OpenAI 轉寫要你勾了才換，不勾就維持原本的轉寫（例如本機辨識）（見下面「[設定自己的 key](#設定自己的-key)」）。也可以第二步請 AI 幫你放（key 由你自己貼，AI 不經手），或自己在 `~/.voice-dictation/config.json` 的 `openai` 裡加 `"apiKeyFile": "放 key 的檔案"`。
 - **用 CubeLV 登入**：不用準備 key。從選單按「用 CubeLV 登入…」，轉寫、AI 整理、語音指令的判斷都扣 [CubeLV](https://cubelv.com) 帳號的點數（見下面「[用 CubeLV 登入](#用-cubelv-登入)」）。
 
 **第二步：請你的 AI 幫你設定**
 
-每個人常講的產品名、英文縮寫、公司內部用語都不一樣，這些詞最容易被聽錯；AI 整理、自動找輸入框、語音指令也要選 AI、放 key 才能開。打開能在你電腦上讀檔、跑指令的 AI（Claude Code、Codex 這類；ChatGPT 網頁版做不到），把這句話貼給它（不想用 AI 的話，照下面「設定檔」一節自己改也可以）：
+每個人常講的產品名、英文縮寫、公司內部用語都不一樣，這些詞最容易被聽錯；AI 整理、自動找輸入框、語音指令也要選 AI、有 key 才能開（key 可以自己從選單「設定自己的 key…」貼，不用經過 AI）。打開能在你電腦上讀檔、跑指令的 AI（Claude Code、Codex 這類；ChatGPT 網頁版做不到），把這句話貼給它（不想用 AI 的話，照下面「設定檔」一節自己改也可以）：
 
 > 請照 ~/jarvis-voice/AI_SETUP.md 幫我設定 JarvisVoice：填專有名詞並跑測試，也問我要不要開 AI 整理、自動找輸入框、語音指令，要的話幫我設定好並檢查。
 
 AI 會：
 - 從你打過的字裡找出常講的詞，寫進 `~/.voice-dictation/vocabulary.txt`，跑測試比較加詞彙前後的準度。實測 4 句中英夾雜的開發用語：不加詞彙整句全對 1/4，加了 4/4（「平行沙河」變回「平行沙盒」、「香芹卡」變回「鑲嵌卡」）。
-- 跟你說明 AI 整理會送出什麼、要多少錢，問你要用 OpenAI、DeepSeek 還是 Claude；請你自己把 key 貼進一個只有你讀得到的檔案；把開關寫進設定檔；跑 `node ~/jarvis-voice/bin/ai-check.mjs` 確認 AI 和決策器都通。
+- 跟你說明 AI 整理會送出什麼、要多少錢，問你要用 OpenAI、DeepSeek 還是 Claude；請你從選單「設定自己的 key…」貼上 key（或貼進只有你讀得到的檔案）；把開關寫進設定檔；跑 `node ~/jarvis-voice/bin/ai-check.mjs` 確認 AI 和決策器都通。
 
 ## 平常怎麼用
 
@@ -66,7 +66,7 @@ AI 會：
 - **游標旁的小框**：講話中就在游標下面即時顯示聽到的字；講完顯示「整理中」，貼上後顯示「已貼上」再淡出。語音指令會顯示做到哪一步，沒貼上、出錯也會寫原因。小框不會搶走游標，滑鼠點得穿過去。
 - **游標不在輸入框時**（例如在看網頁本身、在 Finder 選檔案）：沒開「自動找輸入框」就不寫，圖示會短暫變成叉叉，可以點選單的「複製上一句」把那段拿回來；開了就挑視窗裡該寫的輸入框寫進去。
 - **開會時不收音**：Zoom、Teams、FaceTime、Webex 在最前面時不收音。旁邊有人講話、在放影片，就按選單的「暫停收音」。
-- **選單**：暫停／繼續、複製上一句、換回原文、轉寫（本機／OpenAI／CubeLV／平行沙盒）、AI 整理（關／OpenAI／DeepSeek／Claude／CubeLV）、自動找輸入框、語音指令、編輯專有名詞、編輯設定檔、用 CubeLV 登入／登出、說明、結束。
+- **選單**：暫停／繼續、複製上一句、換回原文、轉寫（本機／OpenAI／CubeLV／平行沙盒）、AI 整理（關／OpenAI／DeepSeek／Claude／CubeLV）、自動找輸入框、語音指令、編輯專有名詞、編輯設定檔、設定自己的 key、用 CubeLV 登入／登出、說明、結束。
 
 ## AI 整理（第二層）
 
@@ -124,6 +124,17 @@ AI 會：
 
 只有判定是人聲的片段才會送去轉寫，安靜時什麼都不送。費用已經算進每句前後多帶的約 1.25 秒。換引擎從選單「轉寫」選，或跑 `./install.sh <引擎>`、直接改設定檔，存檔後幾秒內就會套用。
 
+## 設定自己的 key
+
+不用改設定檔，也不用開終端機：
+
+- **設定**：選單按「設定自己的 key…」，選哪一家（OpenAI：轉寫與 AI 整理共用；DeepSeek、Claude：AI 整理；TypeSafe Jev：語音指令的判斷，選用），貼上 key，按「測試並儲存」。
+- **先測再存**：照 `ai-check.mjs` 的做法實際打一次，通了才存，對話框說「已設定，可以用了」；不通就說原因（key 不對、餘額不足、連不到），不存。
+- **存完順手切過去**：DeepSeek、Claude 把 AI 整理切到那家；OpenAI 在 AI 整理還沒有能用的那家時才切過去，轉寫只在你勾了「轉寫也改用 OpenAI」才換，不勾就維持原本的轉寫（預設是本機辨識）；Jev 有 key 就會用。在「AI 整理」「轉寫」子選單選到還沒有 key 的那家，也會直接跳出這個對話框。
+- **存在哪**：macOS 鑰匙圈（「鑰匙圈存取」裡叫「JarvisVoice OpenAI key」這類名字），不寫進設定檔。要換一把就再設定一次；要拿掉就在同一個對話框按「清除已存的 key」。
+- **跟設定檔的關係**：選單存的 key 最優先，再來才是設定檔的 `apiKey`／`ai.keys`、`apiKeyFile`／`ai.keyFiles`、`ai.keyCommands`、環境變數。這些原本的設定方式照常能用；清除選單存的 key，就回到設定檔裡的那把。
+- **終端機也可以**：`node ~/jarvis-voice/bin/set-key.mjs set deepseek`（貼上時畫面不顯示；`set openai --engine` 是轉寫也換成 OpenAI）。
+
 ## 用 CubeLV 登入
 
 不想自己申請、保管 key 的話，可以用 CubeLV 帳號：
@@ -160,13 +171,13 @@ AI 會：
 | `output` | `traditional`（台灣正體）、`simplified`、`original` |
 | `replacements` | 轉出來的字固定替換，給測試後仍然固定錯的寫法用 |
 | `openai.model` | `gpt-transcribe`（預設，整句送出）或 `gpt-live-transcribe`（即時） |
-| `openai.apiKey`／`openai.apiKeyFile` | key 本身，或放 key 的檔案（整個檔案就是 key，或含 `OPENAI_API_KEY=` 的 .env）；都沒有就讀環境變數 `OPENAI_API_KEY` |
+| `openai.apiKey`／`openai.apiKeyFile` | key 本身，或放 key 的檔案（整個檔案就是 key，或含 `OPENAI_API_KEY=` 的 .env）；都沒有就讀環境變數 `OPENAI_API_KEY`。選單「設定自己的 key…」存的（鑰匙圈）比這些都優先 |
 | `openai.languages` | 預期的語言，例如 `["zh-tw", "en"]` |
 | `openai.prompt` | 一兩句話描述場合，不要塞詞彙清單 |
 | `openai.vocabularyFile` | 專有名詞檔，預設 `~/.voice-dictation/vocabulary.txt`，一行一個詞 |
 | `local.language` | `auto` 或 `zh`、`en`、`yue`、`ja`、`ko` |
 | `ai.enabled`／`ai.provider` | AI 整理開關（預設開）；`deepseek`、`openai`、`claude`、`cubelv`（用 CubeLV 登入），沒寫就用已經有 key 的那家。選單可以直接切 |
-| `ai.keys`／`ai.keyFiles`／`ai.keyCommands` | 各家的 key、放 key 的檔案、或拿 key 的指令（例如 `aws ssm get-parameter ...`，key 不落地）。都沒有就讀環境變數 `DEEPSEEK_API_KEY`、`ANTHROPIC_API_KEY`；OpenAI 沿用 `openai` 的 key |
+| `ai.keys`／`ai.keyFiles`／`ai.keyCommands` | 各家的 key、放 key 的檔案、或拿 key 的指令（例如 `aws ssm get-parameter ...`，key 不落地）。都沒有就讀環境變數 `DEEPSEEK_API_KEY`、`ANTHROPIC_API_KEY`；OpenAI 沿用 `openai` 的 key。選單「設定自己的 key…」存的（鑰匙圈）比這些都優先 |
 | `ai.models` | 換模型，例如 `{ "openai": "gpt-4.1-mini" }` |
 | `ai.segmentPauseMs` | 停多久算一段講完，預設 1800（提早整理關掉時才要等滿） |
 | `speed.earlyTranscribeMs` | 停多久就先把這句送去轉寫，預設 400（又開口就作廢）；0 是不提早 |
@@ -179,14 +190,14 @@ AI 會：
 | `ai.autoVocabulary` | 詞彙表自動更新：`{ "enabled": true, "max": 250, "maxAuto": 80, "minSightings": 3 }` |
 | `autoFocus` | 游標不在輸入框時自動找輸入框（預設開） |
 | `commands` | 語音指令（預設開） |
-| `jev.apiKey`／`jev.apiKeyFile`／`jev.apiKeyCommand` | TypeSafe 的 key（環境變數 `TYPESAFE_API_KEY` 也可以） |
+| `jev.apiKey`／`jev.apiKeyFile`／`jev.apiKeyCommand` | TypeSafe 的 key（環境變數 `TYPESAFE_API_KEY` 也可以）；選單「設定自己的 key…」存的優先 |
 | `cubelv.apiUrl` | 用 CubeLV 登入時連哪個 CubeLV，預設 `https://app-api.cubelv.com`；登入資訊存在鑰匙圈，不在設定檔 |
 
 ## 疑難排解
 
 - **選單列沒有圖示**：打開 `~/Applications/JarvisVoice.app`。macOS 26 可以到「系統設定 → 選單列」確認它被允許顯示。
 - **圖示是驚嘆號**：點開選單看第一行寫的原因。
-- **AI 整理沒作用、選單寫「（沒有 key）」或「（未登入）」**：跑 `node ~/jarvis-voice/bin/ai-check.mjs`，它會說缺什麼。
+- **AI 整理沒作用、選單寫「（沒有 key）」或「（未登入）」**：從選單「設定自己的 key…」重新貼一次（不通會說原因），或跑 `node ~/jarvis-voice/bin/ai-check.mjs`，它會說缺什麼。
 - **用 CubeLV 登入後出錯**：選單寫「CubeLV 點數用完了」就到 CubeLV 加值；寫「CubeLV 登入已失效」就重新按「用 CubeLV 登入…」。也可以直接從選單換回本機辨識或自己的 key。
 - **字沒貼進去**：先確認游標在輸入框裡，再確認「輔助使用」裡有打開「JarvisVoice」。
 - **看詳細記錄**：`~/.voice-dictation/listen.log`。
@@ -198,6 +209,7 @@ AI 會：
 - `app/ui.js`：選單列的介面，以及帶起常駐程式的邏輯。外殼啟動時才讀進來，所以改它不用重包 app、權限也不用重給；改完從選單「結束」再打開就生效。
 - `bin/listen.mjs`：常駐程式。它看哪個 app 在最前面，用 ffmpeg 收音、在本機切句，交給轉寫引擎；AI 整理開著就分段交給 AI，再寫進輸入框或執行指令。
 - `bin/engines/`：`batch.mjs`（OpenAI 一般轉寫）、`realtime.mjs`（即時轉寫，OpenAI、CubeLV 或平行沙盒）、`local.mjs`（sherpa-onnx 跑 SenseVoice）。
+- `bin/own-keys.mjs`、`bin/set-key.mjs`：選單「設定自己的 key…」（先測再存、key 存鑰匙圈、切換轉寫與 AI 整理）。
 - `bin/cubelv.mjs`、`bin/cubelv-login.mjs`：用 CubeLV 登入（瀏覽器授權、token 存鑰匙圈並自動更新、CubeLV 的轉寫與 AI 整理）。
 - `bin/ax-agent.js`：常駐的「輔助使用」小幫手（JXA）。讀上下文、找輸入框、對焦、貼上（暫存剪貼簿 → Cmd+V → 還原，只送給最前面的 app）、選回剛貼的字、列出畫面上的按鈕並操作。
 - `core/`：共用核心，Mac 小程式、CubeLV、平行沙盒共用一份（見 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)）。`scripts/sync-core.sh` 同步到別的專案。

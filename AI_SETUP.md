@@ -8,7 +8,7 @@
 - **第二部分：AI 整理、自動找輸入框、語音指令**（先問他要不要）。選 AI（OpenAI、DeepSeek、Claude）、放 key、打開開關、跑檢查。
 
 **key 的規則（兩部分都適用）：**
-- 不要叫使用者把 key 貼進對話；由他自己在終端機貼（下面有指令），你不經手、不印出來、不寫進 log。
+- 不要叫使用者把 key 貼進對話；請他從選單「設定自己的 key…」貼，或由他自己在終端機貼（下面有指令），你不經手、不印出來、不寫進 log。
 - key 檔放在 `~/.config/jarvis-voice/`，權限 600；不要放進 `~/jarvis-voice`（那是 git repo）。
 
 # 第一部分：專有名詞
@@ -141,7 +141,9 @@ node ~/jarvis-voice/bin/vocab-test.mjs --mic    # 使用者自己念
 
 ### 10. 放 key（OpenAI 而且轉寫已經有 key 的、用 CubeLV 登入的，跳過這步）
 
-請使用者自己在終端機跑下面這行，把 key 貼進去（貼的時候畫面不會顯示）。把 `DEEPSEEK_API_KEY`、`deepseek.env` 換成他選的那家：DeepSeek 用 `DEEPSEEK_API_KEY`，Claude 用 `ANTHROPIC_API_KEY`，OpenAI 用 `OPENAI_API_KEY`。
+最簡單的是請使用者點選單列的 JarvisVoice →「設定自己的 key…」，選他挑的那家、貼上 key、按「測試並儲存」：小程式會先實際打一次，通了才存進 macOS 鑰匙圈（不寫進設定檔），並把 AI 整理切到那家（OpenAI 的轉寫要他勾「轉寫也改用 OpenAI」才換）。用選單存的話，第 11 步不用寫 `keyFiles`／`keyCommands`，只要確認 `autoFocus`、`commands` 照他的選擇。偏好終端機的，`node ~/jarvis-voice/bin/set-key.mjs set deepseek`（換成他選的那家）做的事一樣，貼上時畫面不顯示。
+
+不想用鑰匙圈、或想自己管 key 檔的，請使用者自己在終端機跑下面這行，把 key 貼進去（貼的時候畫面不會顯示）。把 `DEEPSEEK_API_KEY`、`deepseek.env` 換成他選的那家：DeepSeek 用 `DEEPSEEK_API_KEY`，Claude 用 `ANTHROPIC_API_KEY`，OpenAI 用 `OPENAI_API_KEY`。
 
 ```bash
 mkdir -p ~/.config/jarvis-voice && read -s "KEY?貼上 key 後按 Enter：" && printf 'DEEPSEEK_API_KEY=%s\n' "$KEY" > ~/.config/jarvis-voice/deepseek.env && chmod 600 ~/.config/jarvis-voice/deepseek.env && unset KEY && echo 已存好
@@ -173,12 +175,13 @@ key 已經放在密碼管理或雲端的，改用指令拿，key 不落地（設
 }
 ```
 
+- 第 10 步用選單「設定自己的 key…」存的：`ai` 裡的 `keyFiles` 整行不用寫，`provider` 也已經切好了。
 - 用 `keyCommands` 的話把 `keyFiles` 換成 `"keyCommands": { "deepseek": "<上表的指令>" }`。
 - 選 OpenAI 而且轉寫已經有 key：只要 `"ai": { "enabled": true, "provider": "openai" }`。
 - 用 CubeLV 登入：登入時會自己寫好，不用改設定檔；只要確認 `autoFocus`、`commands` 照他的選擇。
 - 存檔後幾秒內自動套用。之後要換家、開關功能，直接用選單「AI 整理」「自動找輸入框」「語音指令」。
 - 想調語氣可以加 `ai.styles`，例如 `{ "com.tinyspeck.slackmacgap": "口語、簡短" }`（key 是 app 的 bundle id 或網站網域）；沒寫會用內建的聊天、email、給 AI 的指令、文件四種語氣。
-- **Jev（選用）**：自動找輸入框和語音指令的決策器，一步約 0.2 秒。TypeSafe（https://typesafe.ai）的 key，可能暫停註冊中。有的話照第 10 步存成 `~/.config/jarvis-voice/jev.env`（變數名 `TYPESAFE_API_KEY`），設定檔加 `"jev": { "apiKeyFile": "~/.config/jarvis-voice/jev.env" }`。沒有也能用，會改問上面選的 AI，一步約 1 秒。
+- **Jev（選用）**：自動找輸入框和語音指令的決策器，一步約 0.2 秒。TypeSafe（https://typesafe.ai）的 key，可能暫停註冊中。有的話請使用者從選單「設定自己的 key…」選 TypeSafe Jev 貼上，或照第 10 步存成 `~/.config/jarvis-voice/jev.env`（變數名 `TYPESAFE_API_KEY`），設定檔加 `"jev": { "apiKeyFile": "~/.config/jarvis-voice/jev.env" }`。沒有也能用，會改問上面選的 AI，一步約 1 秒。
 
 ### 12. 檢查
 

@@ -183,7 +183,8 @@ LINE 這類 app 輔助使用只讀得到搜尋框和訊息框（實測 3 個元�
 | `bin/ax.mjs` | 跟小幫手講話；掛了、卡住、用久了就重開 |
 | `bin/editor.mjs`、`bin/decide.mjs`、`bin/commander.mjs`、`bin/learn.mjs`、`bin/vocab-auto.mjs`、`bin/targeter.mjs` | 把核心接上 Mac 的接頭：自己的 key、AX 小幫手、檔案 |
 | `bin/history.mjs` | 本機歷史 |
-| `app/ui.js` | 選單：AI 整理三選一、自動找輸入框、語音指令、換回原文；選單列圖示；游標旁的小框 |
+| `bin/own-keys.mjs`、`bin/set-key.mjs` | 選單「設定自己的 key…」：先實際測一次再存、key 存鑰匙圈（讀設定時最優先，清除後回到設定檔的 key）、切換轉寫與 AI 整理 |
+| `app/ui.js` | 選單：AI 整理三選一、自動找輸入框、語音指令、換回原文、設定自己的 key；選單列圖示；游標旁的小框 |
 | `tests/ai.spec.mjs` | 三家 AI、設定、找輸入框、決策器、指令、自動學詞、整條管線（音檔 → 假轉寫 → 假 AI） |
 | `tests/ax.spec.mjs` | 小幫手對真的視窗（不送按鍵）；指令模式對看盤測試視窗；有 `TYPESAFE_API_KEY` 再跑真的 Jev |
 
