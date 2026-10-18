@@ -72,19 +72,24 @@ export function createVocabAuto(input: { log?: (m: string) => void; store: Vocab
 export interface AudioTurn { startMs: number; endMs: number }
 export class AudioTurnDetector {
   readonly speaking: boolean;
+  /** 有聲音了但還不到 180 ms，還不知道是開口還是雜音 */
+  readonly starting: boolean;
   readonly currentStartMs: number | null;
+  silenceMs: number;
   lastVoiced: boolean;
   shortBlips: number;
   push(samples: Int16Array, startMs: number): AudioTurn | null;
   finish(): AudioTurn | null;
 }
 export class TurnSplitter {
-  constructor(opts?: { preRollBatches?: number });
+  /** tentativeMs：講話中停這麼久先報 tentative（預設 400，0 是不報） */
+  constructor(opts?: { preRollBatches?: number; tentativeMs?: number });
   readonly detector: AudioTurnDetector;
   readonly speaking: boolean;
   readonly currentStartMs: number | null;
-  push(samples: Int16Array, startMs: number): { audio: Uint8Array[]; turn: AudioTurn | null };
-  finish(): { audio: Uint8Array[]; turn: AudioTurn | null };
+  /** tentative：停了 tentativeMs，可以先送轉寫；resumed：之後又開口，先送的作廢 */
+  push(samples: Int16Array, startMs: number): { audio: Uint8Array[]; turn: AudioTurn | null; tentative: boolean; resumed: boolean };
+  finish(): { audio: Uint8Array[]; turn: AudioTurn | null; tentative: boolean; resumed: boolean };
 }
 
 /** 轉寫連線接頭：WebSocket 網址，或連線前要帶的 header 與開線後第一個送出的設定。 */
@@ -172,6 +177,8 @@ export const PROVIDERS: string[];
 export const DEFAULT_MODELS: Record<string, string>;
 export const PROVIDER_NAMES: Record<string, string>;
 export const DEFAULT_URLS: Record<string, string>;
-export function ownKeyService(input: { provider?: string; model?: string; apiKey?: string; jevKey?: string; jevModel?: string; timeoutMs?: number; urls?: Record<string, string> }):
+export function ownKeyService(input: { provider?: string; model?: string; apiKey?: string; jevKey?: string; jevModel?: string; timeoutMs?: number; urls?: Record<string, string>; hedge?: number }):
   { model: string; complete: Complete | null; jev: Jev | null };
+/** 同一個請求同時送 copies 份，誰先成功用誰、其他的取消；call 要吃 args.signal */
+export function hedge<A extends { signal?: AbortSignal }, R>(call: (args: A) => Promise<R>, copies?: number): (args: A) => Promise<R>;
 export const CORE_VERSION: string;

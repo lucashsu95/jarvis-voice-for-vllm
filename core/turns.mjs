@@ -28,6 +28,8 @@ export class AudioTurnDetector {
   recentLevels = [];
 
   get speaking() { return this.activeStart !== null; }
+  // 有聲音了但還不到 180 ms，還不知道是開口還是雜音
+  get starting() { return this.activeStart === null && this.candidateStart !== null; }
   // 正在講的這句從哪裡開始；沒在講是 null
   get currentStartMs() { return this.activeStart; }
 
@@ -101,13 +103,18 @@ export class AudioTurnDetector {
 
 // 斷句加上該送出去的聲音：開口前的 0.4 秒（4 批）先留著，判定開口時一起送，句子開頭的子音才不會被切掉；
 // 講話中每批照送，停頓夠久切一句。沒在講話的聲音不送。
-// push／finish 回傳 { audio, turn }：audio 是這次要送出去的聲音（PCM16 的位元組，0～5 批），turn 是切出來的那句（沒有是 null）。
+// push／finish 回傳 { audio, turn, tentative, resumed }：audio 是這次要送出去的聲音（PCM16 的位元組，0～5 批），
+// turn 是切出來的那句（沒有是 null）。
+// 暫定斷句：講話中停了 tentativeMs（預設 400 ms）先報一次 tentative，呼叫端可以先把到這裡的聲音送去轉寫；
+// 還沒切句又有人聲就報 resumed（先送的那份作廢），沒有就等 850 ms 照常切句，先送的那份就是這句的結果（中間只有靜音）。
 // 存起來的是傳進來那批樣本本身，呼叫端每批要給新的陣列，不能重複用同一塊。
 export class TurnSplitter {
-  constructor({ preRollBatches = 4 } = {}) {
+  constructor({ preRollBatches = 4, tentativeMs = 400 } = {}) {
     this.detector = new AudioTurnDetector();
     this.preRoll = [];
     this.preRollBatches = preRollBatches;
+    this.tentativeMs = tentativeMs;
+    this.tentativeOpen = false; // 報過 tentative、還沒切句也還沒又開口
   }
 
   get speaking() { return this.detector.speaking; }
@@ -127,13 +134,26 @@ export class TurnSplitter {
       this.preRoll.push(bytes);
       if (this.preRoll.length > this.preRollBatches) this.preRoll.shift();
     }
-    return { audio, turn };
+    let tentative = false;
+    let resumed = false;
+    if (turn) this.tentativeOpen = false;
+    else if (this.detector.speaking && this.tentativeMs > 0) {
+      if (this.tentativeOpen && this.detector.lastVoiced) {
+        this.tentativeOpen = false;
+        resumed = true;
+      } else if (!this.tentativeOpen && this.detector.silenceMs >= this.tentativeMs) {
+        this.tentativeOpen = true;
+        tentative = true;
+      }
+    }
+    return { audio, turn, tentative, resumed };
   }
 
   finish() {
     const turn = this.detector.finish();
     const audio = turn ? this.preRoll : [];
     this.preRoll = [];
-    return { audio, turn };
+    this.tentativeOpen = false;
+    return { audio, turn, tentative: false, resumed: false };
   }
 }

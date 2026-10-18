@@ -59,6 +59,7 @@ AI 會：
   - 標誌變淡：待命（最前面的 app 不收音）。
   - 標誌加一條斜線（像禁止標誌）：暫停，沒在聽。
   - 三角形驚嘆號：出錯，點開選單看原因。
+- **游標旁的小框**：講話中就在游標下面即時顯示聽到的字；講完顯示「整理中」，貼上後顯示「已貼上・幾秒」再淡出。語音指令會顯示做到哪一步，沒貼上、出錯也會寫原因。小框不會搶走游標，滑鼠點得穿過去。
 - **游標不在輸入框時**（例如在看網頁本身、在 Finder 選檔案）：沒開「自動找輸入框」就不寫，圖示會短暫變成叉叉，可以點選單的「複製上一句」把那段拿回來；開了就挑視窗裡該寫的輸入框寫進去。
 - **開會時不收音**：Zoom、Teams、FaceTime、Webex 在最前面時不收音。旁邊有人講話、在放影片，就按選單的「暫停收音」。
 - **選單**：暫停／繼續、複製上一句、換回原文、AI 整理（關／OpenAI／DeepSeek／Claude）、自動找輸入框、語音指令、編輯專有名詞、編輯設定檔、說明、結束。
@@ -152,7 +153,11 @@ AI 會：
 | `ai.enabled`／`ai.provider` | AI 整理開關（預設開）；`deepseek`、`openai`、`claude`，沒寫就用已經有 key 的那家。選單可以直接切 |
 | `ai.keys`／`ai.keyFiles`／`ai.keyCommands` | 各家的 key、放 key 的檔案、或拿 key 的指令（例如 `aws ssm get-parameter ...`，key 不落地）。都沒有就讀環境變數 `DEEPSEEK_API_KEY`、`ANTHROPIC_API_KEY`；OpenAI 沿用 `openai` 的 key |
 | `ai.models` | 換模型，例如 `{ "openai": "gpt-4.1-mini" }` |
-| `ai.segmentPauseMs` | 停多久算一段講完，預設 1800 |
+| `ai.segmentPauseMs` | 停多久算一段講完，預設 1800（提早整理關掉時才要等滿） |
+| `speed.earlyTranscribeMs` | 停多久就先把這句送去轉寫，預設 400（又開口就作廢）；0 是不提早 |
+| `speed.pasteAfterMs` | 字一回來就先整理，整理好時已經停了這麼久就直接貼，預設 1200；0 是照 `ai.segmentPauseMs` 等滿 |
+| `speed.hedge` | 轉寫、AI 整理每次同時送幾份、誰先回用誰，預設 2（費用跟著乘） |
+| `speed.bubble`／`speed.preview` | 游標旁的小框、講話中即時預覽（用本機 SenseVoice，只顯示不貼），預設都開 |
 | `ai.styles` | 各 app（bundle id）或網站（網域）的語氣，例如 `{ "com.tinyspeck.slackmacgap": "口語、簡短" }` |
 | `ai.screenChars` | 視窗裡看得到的字給 AI 幾個字，預設 1500 |
 | `ai.history`／`ai.learn` | 本機歷史、從你的改字學詞，預設都開 |

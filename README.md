@@ -59,6 +59,7 @@ The AI will:
   - Faded mark: standing by (the frontmost app is excluded).
   - The mark with a slash through it (like a "no" sign): paused, not listening.
   - Triangle with an exclamation mark: something went wrong; open the menu to see why.
+- **Bubble next to the cursor**: while you talk it shows what it hears, right under the cursor; when you stop it says it's cleaning up, then "Pasted · 1.7 s" and fades out. Voice commands show each step; if nothing was pasted or something failed, it says why. The bubble never takes focus, and clicks go straight through it.
 - **When the cursor isn't in a text field** (you're reading a web page, selecting files in Finder): with auto-focus off, nothing is written, the icon briefly shows a cross, and "Copy last sentence" in the menu gets the text back; with auto-focus on, it picks the right field in the window and writes there.
 - **Meetings**: it doesn't listen while Zoom, Teams, FaceTime or Webex is frontmost. If people are talking nearby or a video is playing, choose "Pause listening" in the menu.
 - **Menu**: pause/resume, copy last sentence, revert to the raw transcript, AI cleanup (off / OpenAI / DeepSeek / Claude), auto-focus, voice commands, edit vocabulary, edit config, help, quit.
@@ -152,7 +153,11 @@ Only segments recognized as speech are sent; nothing is sent while it's quiet. C
 | `ai.enabled` / `ai.provider` | AI cleanup on/off (default on); `deepseek`, `openai`, `claude`. If unset, whichever provider you already have a key for. Also switchable from the menu |
 | `ai.keys` / `ai.keyFiles` / `ai.keyCommands` | Each provider's key, a file with the key, or a command that prints it (e.g. `aws ssm get-parameter ...`, so the key never touches disk). Otherwise the `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` environment variables; OpenAI reuses the `openai` key |
 | `ai.models` | Use a different model, e.g. `{ "openai": "gpt-4.1-mini" }` |
-| `ai.segmentPauseMs` | How long a pause ends a passage, default 1800 |
+| `ai.segmentPauseMs` | How long a pause ends a passage, default 1800 (only waited out in full when early cleanup is off) |
+| `speed.earlyTranscribeMs` | Send the sentence for transcription after this much silence, default 400 (discarded if you keep talking); 0 turns it off |
+| `speed.pasteAfterMs` | Start cleanup as soon as the text is back, and paste if you've been quiet this long when it's ready, default 1200; 0 waits for `ai.segmentPauseMs` |
+| `speed.hedge` | How many copies of each transcription and cleanup request to send at once, using whichever answers first, default 2 (cost scales with it) |
+| `speed.bubble` / `speed.preview` | The bubble next to the cursor, and the live preview while you talk (on-device SenseVoice, shown but never pasted); both on by default |
 | `ai.styles` | Tone per app (bundle id) or website (domain), e.g. `{ "com.tinyspeck.slackmacgap": "casual and short" }` |
 | `ai.screenChars` | How many characters of on-screen text go to the AI, default 1500 |
 | `ai.history` / `ai.learn` | Local history, learning from your corrections; both on by default |

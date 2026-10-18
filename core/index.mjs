@@ -18,5 +18,6 @@ export { polishTranscript, mergeTranscript, joinPolished, changedWords, revertPo
 export { isSpeech, onlyFiller, withSpacing } from './text.mjs';
 export { readingOrder, ocrText, joinScreen } from './ocr.mjs';
 export { PROVIDERS, DEFAULT_MODELS, PROVIDER_NAMES, DEFAULT_URLS, ownKeyService } from './providers.mjs';
+export { hedge } from './hedge.mjs';
 
 export const CORE_VERSION = '1.0.0';

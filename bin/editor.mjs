@@ -15,8 +15,8 @@ const envUrls = () => Object.fromEntries(Object.entries({
 }).filter(([, v]) => v));
 
 // 自己的 key 的服務：{ model, complete, jev }
-export function service({ provider = 'openai', model, apiKey, timeoutMs, jevKey, jevModel } = {}) {
-  return ownKeyService({ provider, model, apiKey, timeoutMs, jevKey, jevModel, urls: envUrls() });
+export function service({ provider = 'openai', model, apiKey, timeoutMs, jevKey, jevModel, hedge } = {}) {
+  return ownKeyService({ provider, model, apiKey, timeoutMs, jevKey, jevModel, hedge, urls: envUrls() });
 }
 
 function check(provider, apiKey, what) {
@@ -30,9 +30,10 @@ export async function ask({ provider = 'openai', model, apiKey, timeoutMs = 6000
   return service({ provider, model, apiKey, timeoutMs }).complete({ system, user, schema });
 }
 
-// 回傳 { mode, text, ms, model }；失敗丟錯，呼叫端改貼原稿
-export async function editSegment({ provider = 'openai', model, apiKey, timeoutMs = 6000, ...input }) {
+// 回傳 { mode, text, ms, model }；失敗丟錯，呼叫端改貼原稿。hedge：同時送幾份、誰先回用誰；signal：取消（提早整理作廢時）
+export async function editSegment({ provider = 'openai', model, apiKey, timeoutMs = 6000, hedge = 1, signal, ...input }) {
   check(provider, apiKey, 'AI 編輯');
-  const svc = service({ provider, model, apiKey, timeoutMs });
-  return { ...(await coreEditSegment({ complete: svc.complete, ...input })), model: svc.model };
+  const svc = service({ provider, model, apiKey, timeoutMs, hedge });
+  const complete = signal ? (args) => svc.complete({ ...args, signal }) : svc.complete;
+  return { ...(await coreEditSegment({ complete, ...input })), model: svc.model };
 }

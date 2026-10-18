@@ -45,8 +45,10 @@
 
 ## 第二層：AI 整理（跟 Typeless 一樣）
 
-1. **分段**：「句」停 0.85 秒就送轉寫；「段」要停超過 `ai.segmentPauseMs`（預設 1.8 秒）、而且每句都轉完了，或暫停、切到不收音的 app 才算結束。講到一半改口要看整段才知道，所以整段一起整理。
-2. **上下文**：要寫的時候由常駐的 AX 小幫手（`bin/ax-agent.js`）讀，一次約 7 ms：
+1. **分段**：「句」停 0.85 秒切出來（停 0.4 秒就先送轉寫，見下面「延遲」）；「段」要每句都轉完、而且停夠久才算結束，或暫停、切到不收音的 app。講到一半改口要看整段才知道，所以整段一起整理。
+   - 停多久算一段：字一回來就先整理，整理好時已經停了 `speed.pasteAfterMs`（預設 1.2 秒）就貼；整理途中又開口（或又多一句）就作廢，等整段講完一起整理。提早整理關掉（`speed.pasteAfterMs: 0`）時照舊要停滿 `ai.segmentPauseMs`（預設 1.8 秒）。
+   - 跟以前唯一的差別：停 1.2～1.8 秒又接著講，以前併成一段，現在分成兩段各自貼。
+2. **上下文**：開口時就由常駐的 AX 小幫手（`bin/ax-agent.js`）先讀好（講完直接用；貼上後丟掉，下次開口再讀），一次約 7 ms：
    - app 名稱、bundle id、視窗標題、網址（從網頁區塊的 `AXURL` 讀，不用「自動化」權限）。
    - 輸入框的角色、標籤（例如 Claude 的「Prompt」）、游標前後各 400 字、選取的字。
    - 視窗裡看得到的字（不含輸入框）最後約 1,500 字：網頁用 `AXStaticTextSearchKey`（只要看得到的），原生 app 走 AX 樹收 `AXStaticText`。Claude 視窗約 0.17 秒、Chrome 約 0.33 秒。AI 靠它判斷在討論什麼：實測畫面在講 JarvisVoice、原稿被聽成 JavaScript，三家都改回 JarvisVoice；「這段 JavaScript 的 map 要改成 forEach」三家都不改。
@@ -56,7 +58,7 @@
    - `delete_last`、`revert_last`：「刪掉剛剛那句」「換回原文」→ 小幫手確認游標前面正好是剛貼的字，用 AX 選起來換掉；對不上就不動。
    - `command`：開了語音指令才有，見第三層。
    - 原稿是問題或「忽略前面的規則」這類話，一樣只整理不回答。
-4. **寫入**：貼上（暫存剪貼簿 → Cmd+V → 還原）。送按鍵前確認要寫的 app 真的在最前面，不然等一下再寫，不會打到別的 app。
+4. **寫入**：貼上（暫存剪貼簿 → Cmd+V → 還原）。送按鍵前確認要寫的 app 真的在最前面，不然等一下再寫，不會打到別的 app。小幫手按完 Cmd+V 就回覆，等 app 讀剪貼簿、還原剪貼簿的 0.35 秒在回覆之後才做（字在按下 Cmd+V 時就出現了，下一個請求才要等）。
 5. **換回原文**：選單「換回原文」或講「換回原文」，把上一段 AI 整理過的字換回轉寫原稿。
 6. **詞彙表自動更新**（`bin/vocab-auto.mjs`）：每段寫完後，最多每 2 分鐘、畫面有變才請 AI 從畫面上的字挑出專有名詞當候選。
    - 候選要在 3 次不同的時候（相隔 10 分鐘以上）都看到，或使用者真的講到了（AI 整理後的字裡有它），才加進詞彙檔最後的「自動學到」區。
@@ -78,7 +80,20 @@
 
 ### 延遲
 
-停下 1.8 秒判定一段結束（最後一句的轉寫多半已經在這段時間內完成）→ AI 約 0.75–1.1 秒 → 貼上 0.35 秒。停下後約 3 秒出字；要更快就把 `ai.segmentPauseMs` 調短。
+規劃與量測：`cubelv_docs/計劃/2026-10-19_JarvisVoice語音加速規劃.md`。原則是能先做的先做，猜錯就丟掉重來，整理的結果跟以前一樣（同樣的轉寫模型、整理規則與模型、指令判斷）：
+
+| 做法 | 設定 | 省多少 |
+|---|---|---|
+| 停 0.4 秒就先把這句送去轉寫（`TurnSplitter` 的暫定斷句）；到 0.85 秒確定講完就用這份，中間又開口就作廢、照舊等整句 | `speed.earlyTranscribeMs` | 約 0.45 秒 |
+| 字一回來就開始整理，整理好時已經停 1.2 秒就貼（上面「分段」） | `speed.pasteAfterMs` | 約 0.4 秒 |
+| 開口時就讀好上下文（截圖認字的 app 要 1 秒）、游標不在輸入框時跟整理同時挑好要寫的框 | — | 0.05～1 秒 |
+| 貼上：按完 Cmd+V 就回覆，不等還原剪貼簿 | — | 0.35 秒 |
+| 轉寫、整理每次同時送兩份，誰先回用誰（`core/hedge.mjs`），砍掉偶爾 1 秒以上的那幾次 | `speed.hedge` | 尾巴 |
+| 講話中先 HEAD 一下轉寫、AI、Jev 的網址，講完的請求不用重新握手 | `speed.warm` | 0.05～0.12 秒 |
+
+每次貼上 log 記一行「速度：講完到貼上 X 秒（字回來、整理好、貼上各花多少）」，`history.jsonl` 也記 `latencyMs`。
+
+**游標旁的小框**（`app/ui.js`，`listen.mjs` 送 `bubble` 事件）：開口就出現在游標下面（`context` 回的 `field.caret`：`AXBoundsForRange`，拿不到用輸入框；不在輸入框就放視窗下方中間），講話中顯示即時預覽（本機 SenseVoice 每多 0.5 秒聲音認一次目前這句，約 0.05～0.1 秒，轉台灣正體；只顯示不貼，雲端的字回來就換掉），接著「整理中」、「已貼上・X 秒」；指令顯示做到哪一步，沒貼上、出錯寫原因。無邊框、不會變成作用中的視窗、滑鼠點穿過去。
 
 ## 第三層：自動找輸入框、語音指令（用 Jev 決策）
 
@@ -151,7 +166,8 @@ LINE 這類 app 輔助使用只讀得到搜尋框和訊息框（實測 3 個元�
 
 語音那一層的分工：
 
-- `turns.mjs`：`AudioTurnDetector` 判斷有沒有人聲（門檻跟著最近 3 秒的底噪走，尖峰夠高也算），停頓 850 ms 切一句；`TurnSplitter` 再加上開口前 0.4 秒的預錄，回傳這批要送出去的聲音和切出來的句子。
+- `turns.mjs`：`AudioTurnDetector` 判斷有沒有人聲（門檻跟著最近 3 秒的底噪走，尖峰夠高也算），停頓 850 ms 切一句；`TurnSplitter` 再加上開口前 0.4 秒的預錄，回傳這批要送出去的聲音和切出來的句子，還有暫定斷句（停 400 ms 報 `tentative`、之後又開口報 `resumed`），呼叫端可以先送轉寫。
+- `hedge.mjs`：同一個請求同時送幾份、誰先成功用誰，其他的取消；`ownKeyService` 的 `hedge` 選項用它。
 - `transcription.mjs`：`createTranscriber` 是一條 OpenAI Realtime transcription 連線（每句一個 commit；連線前的聲音先排著；斷了就重連，把還沒拿到字的聲音與句子照順序重送；每句的字照講的順序、帶起訖時間）。Mac 小程式用 `lazy`（有聲音才連，安靜夠久先關）。`createSpeechTranscription` 是一段錄音（輸入框聽寫、驗收錄影的字幕）：斷句、時鐘校正、`hearing`／`recognizing` 狀態、checkpoint、finish。
 - `dictation.mjs`：輸入框聽寫停下後的第二層與寫回：`polishTranscript`（整理、逾時照原稿）、`applyPolish`（寫成什麼、要不要送出、留不留換回原文）、`revertPolish`、`joinPolished`。
 
@@ -161,13 +177,13 @@ LINE 這類 app 輔助使用只讀得到搜尋框和訊息框（實測 3 個元�
 
 | 檔案 | 做什麼 |
 |---|---|
-| `core/` | 共用核心：`editor.mjs`（AI 整理）、`decide.mjs`（決策題目與門檻）、`commander.mjs`（指令步驟）、`targeter.mjs`、`learn.mjs`、`vocab.mjs`、`turns.mjs`（斷句）、`transcription.mjs`（即時轉寫連線）、`dictation.mjs`（輸入框聽寫的寫回）、`ocr.mjs`（截圖認字的字排順序、接成文字、跟其他上下文合在字數內）、`providers.mjs`（自己的 key）、`index.d.mts`（型別） |
+| `core/` | 共用核心：`hedge.mjs`（雙發）、`editor.mjs`（AI 整理）、`decide.mjs`（決策題目與門檻）、`commander.mjs`（指令步驟）、`targeter.mjs`、`learn.mjs`、`vocab.mjs`、`turns.mjs`（斷句）、`transcription.mjs`（即時轉寫連線）、`dictation.mjs`（輸入框聽寫的寫回）、`ocr.mjs`（截圖認字的字排順序、接成文字、跟其他上下文合在字數內）、`providers.mjs`（自己的 key）、`index.d.mts`（型別） |
 | `bin/listen.mjs` | 常駐程式：收音、切句、分段、讀上下文、AI 整理、找輸入框、指令、寫入、換回原文、自動學詞 |
 | `bin/ax-agent.js` | 常駐的 AX 小幫手（JXA），stdin／stdout 一行一個 JSON：context、paste、replace、targets、focus、read、elements、act |
 | `bin/ax.mjs` | 跟小幫手講話；掛了、卡住、用久了就重開 |
 | `bin/editor.mjs`、`bin/decide.mjs`、`bin/commander.mjs`、`bin/learn.mjs`、`bin/vocab-auto.mjs`、`bin/targeter.mjs` | 把核心接上 Mac 的接頭：自己的 key、AX 小幫手、檔案 |
 | `bin/history.mjs` | 本機歷史 |
-| `app/ui.js` | 選單：AI 整理三選一、自動找輸入框、語音指令、換回原文 |
+| `app/ui.js` | 選單：AI 整理三選一、自動找輸入框、語音指令、換回原文；選單列圖示；游標旁的小框 |
 | `tests/ai.spec.mjs` | 三家 AI、設定、找輸入框、決策器、指令、自動學詞、整條管線（音檔 → 假轉寫 → 假 AI） |
 | `tests/ax.spec.mjs` | 小幫手對真的視窗（不送按鍵）；指令模式對看盤測試視窗；有 `TYPESAFE_API_KEY` 再跑真的 Jev |
 
@@ -175,4 +191,3 @@ LINE 這類 app 輔助使用只讀得到搜尋框和訊息框（實測 3 個元�
 
 - 對選取的唯讀文字提問（摘要、解釋）、邊講邊翻譯：Typeless 有。
 - 指令模式跨 app 的細部導航（例如 Slack 找到某個人的對話）：現在只會先 `open -a` 切到 app，再在那個 app 的畫面上一步步找。
-- 指令或 AI 整理進行中時，選單列圖示沒有專屬的樣子。

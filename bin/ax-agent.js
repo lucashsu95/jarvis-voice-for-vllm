@@ -4,9 +4,11 @@
 //
 // 請求 { id, op, ... } → 回覆 { id, ... } 或 { id, error }：
 //   check   { ask }                   → { trusted }
-//   context { pid, chars, screen }    → { app, window, url, screen, field: { editable, known, role, subrole, secure, label, before, selected, after, handle } }
+//   context { pid, chars, screen }    → { app, window, url, screen, frame, field: { editable, known, role, subrole, secure, label, before, selected, after, handle, caret } }
 //                                       screen：要幾個字的「視窗裡看得到的字」（不含輸入框），0 就不讀
+//                                       frame：視窗、caret：游標（拿不到就是輸入框）在螢幕上的位置 { x, y, w, h }（左上角原點），給游標旁的小框用
 //   paste   { pid, text, dry }        → { result: ok | no-accessibility | not-text-field:<角色> | not-front | dry:<字>, handle }
+//                                       按完 Cmd+V 就回覆，等 app 讀剪貼簿、還原剪貼簿（0.35 秒）在回覆之後才做
 //   replace { pid, old, text }        → { result: ok | mismatch | no-field | not-front }：游標前面正好是 old 就選起來換成 text（空字串＝刪掉）
 //   按鍵（Cmd+V、Delete）只在 pid 確實是最前面的 app 時才送，不然回 not-front
 //   targets { pid }                   → { window: {x,y,w,h,title}, candidates: [{ handle, role, subrole, label, x, y, w, h, focused, enabled }] }
@@ -73,6 +75,24 @@ function frameOf(el) {
   const p = describe(attr(el, 'AXPosition')).match(/x:(-?[\d.]+) y:(-?[\d.]+)/);
   const s = describe(attr(el, 'AXSize')).match(/w:([\d.]+) h:([\d.]+)/);
   return p && s ? { x: Number(p[1]), y: Number(p[2]), w: Number(s[1]), h: Number(s[2]) } : null;
+}
+
+function rectOf(v) {
+  const m = describe(v).match(/x:(-?[\d.]+) y:(-?[\d.]+) w:([\d.]+) h:([\d.]+)/);
+  return m ? { x: Number(m[1]), y: Number(m[2]), w: Number(m[3]), h: Number(m[4]) } : null;
+}
+
+// 游標在螢幕上的位置：選取範圍的外框（沒選取就是游標那一條）；有些 app 給 0×0 或原點，改用整個輸入框
+function caretOf(el) {
+  const range = rangeOf(el);
+  if (range) {
+    const ref = Ref();
+    if ($.AXUIElementCopyParameterizedAttributeValue(el, $('AXBoundsForRange'), rangeValue(range.location, range.length), ref) === 0) {
+      const r = rectOf(ObjC.castRefToObject(ref[0]));
+      if (r && r.h > 0 && (r.x || r.y)) return r;
+    }
+  }
+  return frameOf(el);
 }
 
 // CFRange 是兩個 64-bit 整數，拼成 16 bytes 再包成 AXValue
@@ -273,6 +293,7 @@ function context({ pid, chars = 400, screen = 0 }) {
     window: text(win, 'AXTitle'),
     url: '',
     field: { known: false, editable: false },
+    frame: win ? frameOf(win) : null,
   };
   const f = focusedField(app);
   const web = f.el ? webAreaOf(f.el) : null;
@@ -293,6 +314,7 @@ function context({ pid, chars = 400, screen = 0 }) {
   if (!f.editable) return out;
   out.field.label = labelOf(f.root) || labelOf(f.el);
   out.field.handle = keep(f.root);
+  out.field.caret = caretOf(f.root);
   const range = rangeOf(f.root);
   const count = Number(ObjC.unwrap(attr(f.root, 'AXNumberOfCharacters')) || 0);
   if (!range) return out;
@@ -359,7 +381,10 @@ const KEY_A = 0;
 const KEY_DELETE = 51;
 const KEY_RETURN = 36;
 
-// 暫存剪貼簿 → 放字 → Cmd+V → 等 app 讀完 → 還原剪貼簿
+// 回覆送出後才做的事（貼上後等 app 讀剪貼簿、還原剪貼簿）：node 不用等這 0.35 秒，下一個請求才會等
+let afterReply = null;
+
+// 暫存剪貼簿 → 放字 → Cmd+V → （回覆之後）等 app 讀完 → 還原剪貼簿
 function pasteText(value, dry) {
   const pb = $.NSPasteboard.generalPasteboard;
   const saved = snapshot(pb);
@@ -368,8 +393,7 @@ function pasteText(value, dry) {
   let placed = '';
   if (dry) placed = ObjC.unwrap(pb.stringForType($.NSPasteboardTypeString)) || '';
   else pressKey(KEY_V, true);
-  delay(0.35);
-  restore(pb, saved);
+  afterReply = () => { delay(0.35); restore(pb, saved); };
   return placed;
 }
 
@@ -622,6 +646,11 @@ function run() {
         reply(out, { id: request.id, ...op(request) });
       } catch (err) {
         reply(out, { id: request.id, error: String(err) });
+      }
+      if (afterReply) {
+        const later = afterReply;
+        afterReply = null;
+        try { later(); } catch (err) { /* 剪貼簿還原不了：使用者的剪貼簿會是剛貼的字 */ }
       }
     }
   }

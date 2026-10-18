@@ -388,20 +388,45 @@ async function runListener(dir, config, env) {
 
 const transcribeServer = () => fakeJson((call, n) => ({ body: { text: n === 1 ? '嗯第一句。' : '第二句。' } }));
 
-test('整條管線：AI 整理開著時，兩句合成一段只問一次 AI，貼 AI 整理後的字', { timeout: 30_000 }, async () => {
+test('整條管線：AI 整理開著時，兩句合成一段，貼 AI 整理後的字；中間停頓時提早整理的那次作廢；講完 1.2 秒就貼', { timeout: 30_000 }, async () => {
   const stt = await transcribeServer();
   const chat = await fakeJson(() => chatReply({ mode: 'insert', text: '第一句，第二句。', goal: '', app: '' }));
   try {
     const dir = mkdtempSync(join(tmpdir(), 'voice-dictation-pipe-'));
     const events = await runListener(dir, {
+      engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 }, speed: { hedge: 1 },
+    }, { VOICE_DICTATION_OPENAI_HTTP_URL: `${stt.url}/v1/audio/transcriptions`, VOICE_DICTATION_OPENAI_CHAT_URL: `${chat.url}/chat` });
+    const pasted = events.filter((e) => e.type === 'pasted');
+    assert.equal(stt.calls.length, 2); // 停 0.4 秒先送的那份就是這句的結果，不重送
+    assert.equal(chat.calls.length, 2); // 第一句一回來就先整理，第二句開口就作廢
+    assert.match(chat.calls[0].body.messages[1].content, /<transcript>嗯第一句。<\/transcript>/);
+    assert.match(chat.calls[1].body.messages[1].content, /<transcript>嗯第一句。第二句。<\/transcript>/);
+    assert.deepEqual(pasted.map((e) => [e.text, e.raw]), [['第一句，第二句。', '嗯第一句。第二句。']]);
+    assert.equal(readFileSync(join(dir, 'last.txt'), 'utf8'), '第一句，第二句。');
+    assert.equal(pasted[0].timing.earlyTranscribe, true);
+    assert.equal(pasted[0].timing.earlyPolish, true);
+    assert.ok(pasted[0].latencyMs >= 1200 && pasted[0].latencyMs < 1500, `停 1.2 秒就貼，不等 segmentPauseMs：${pasted[0].latencyMs} ms`);
+  } finally {
+    stt.close();
+    chat.close();
+  }
+});
+
+test('整條管線：提早轉寫、提早整理都關掉時照原本，停滿 segmentPauseMs 才整理、只問一次 AI', { timeout: 30_000 }, async () => {
+  const stt = await transcribeServer();
+  const chat = await fakeJson(() => chatReply({ mode: 'insert', text: '第一句，第二句。', goal: '', app: '' }));
+  try {
+    const events = await runListener(mkdtempSync(join(tmpdir(), 'voice-dictation-pipe-')), {
       engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 },
+      speed: { hedge: 1, earlyTranscribeMs: 0, pasteAfterMs: 0 },
     }, { VOICE_DICTATION_OPENAI_HTTP_URL: `${stt.url}/v1/audio/transcriptions`, VOICE_DICTATION_OPENAI_CHAT_URL: `${chat.url}/chat` });
     const pasted = events.filter((e) => e.type === 'pasted');
     assert.equal(stt.calls.length, 2);
     assert.equal(chat.calls.length, 1);
-    assert.match(chat.calls[0].body.messages[1].content, /<transcript>嗯第一句。第二句。<\/transcript>/);
-    assert.deepEqual(pasted.map((e) => [e.text, e.raw]), [['第一句，第二句。', '嗯第一句。第二句。']]);
-    assert.equal(readFileSync(join(dir, 'last.txt'), 'utf8'), '第一句，第二句。');
+    assert.deepEqual(pasted.map((e) => e.text), ['第一句，第二句。']);
+    assert.equal(pasted[0].timing.earlyTranscribe, false);
+    assert.equal(pasted[0].timing.earlyPolish, false);
+    assert.ok(pasted[0].latencyMs >= 1500, `停滿 1.5 秒才整理：${pasted[0].latencyMs} ms`);
   } finally {
     stt.close();
     chat.close();
@@ -421,11 +446,11 @@ test('整條管線：AI 失敗改貼原稿；AI 整理關著時一句一句貼',
     }
   };
   try {
-    const failed = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 } });
+    const failed = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 }, speed: { hedge: 1 } });
     assert.deepEqual(failed.filter((e) => e.type === 'pasted').map((e) => e.text), ['嗯第一句。第二句。']);
-    const off = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: false } });
+    const off = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: false }, speed: { hedge: 1 } });
     assert.deepEqual(off.filter((e) => e.type === 'pasted').map((e) => e.text), ['嗯第一句。', '第二句。']);
-    assert.equal(chat.calls.length, 1);
+    assert.equal(chat.calls.length, 2);
   } finally {
     chat.close();
   }

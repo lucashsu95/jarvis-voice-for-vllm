@@ -112,6 +112,7 @@ test('真的講話：念出來的句子一路轉寫、整理，貼進測試視�
   const vocab = join(homedir(), '.voice-dictation', 'vocabulary.txt');
   if (existsSync(vocab)) copyFileSync(vocab, join(stateDir, 'vocabulary.txt'));
   const failures = [];
+  const latencies = [];
   try {
     for (const c of CASES) {
       const wav = speak(c.name, c.say, c.volume);
@@ -123,13 +124,19 @@ test('真的講話：念出來的句子一路轉寫、整理，貼進測試視�
       }
       assert.ok(!run.touched, `${c.name}：試了三次中間都有人動鍵盤滑鼠`);
       const { events, log, value } = run;
-      const raw = events.find((e) => e.type === 'pasted')?.raw ?? '';
-      t.diagnostic(`${c.name}：念「${c.say}」→ 轉寫「${raw}」→ 視窗裡「${value}」`);
+      const pastedEvent = events.find((e) => e.type === 'pasted');
+      const raw = pastedEvent?.raw ?? '';
+      // 講完到貼上幾秒（listen 記的「速度」那行：字回來、整理好、貼上各花多少）
+      const speed = log.match(/速度：[^\n]*/)?.[0] ?? '';
+      if (pastedEvent?.latencyMs) latencies.push(pastedEvent.latencyMs);
+      t.diagnostic(`${c.name}：念「${c.say}」→ 轉寫「${raw}」→ 視窗裡「${value}」${speed ? `；${speed}` : ''}`);
       const bad = [...c.expect.filter((re) => !re.test(value)).map((re) => `少了 ${re}`), ...(c.reject ?? []).filter((re) => re.test(value)).map((re) => `不該有 ${re}`)];
       if (bad.length) failures.push(`${c.name}（視窗裡「${value}」）：${bad.join('、')}\n${log.trim().split('\n').slice(-8).join('\n')}`);
     }
   } finally {
     restoreFront();
   }
+  const sorted = [...latencies].sort((a, b) => a - b);
+  if (sorted.length) t.diagnostic(`講完到貼上：中位數 ${(sorted[Math.floor(sorted.length / 2)] / 1000).toFixed(2)} 秒、最慢 ${(sorted.at(-1) / 1000).toFixed(2)} 秒（${sorted.length} 句）`);
   assert.deepEqual(failures, []);
 });

@@ -105,3 +105,41 @@ export function createLocalEngine({ model, language = 'auto', threads = 2, onFin
     close() { chunks = []; bytes = 0; queue.length = 0; },
   };
 }
+
+// 即時預覽：雲端轉寫時，講話中用本機 SenseVoice 認目前這句（一句 0.15 秒左右），只拿來在游標旁的小框顯示、不貼。
+// 載不起來（沒下載模型）就沒有預覽，不算錯。recognize(pcm24k) → 認出來的字（簡體，呼叫端轉正體）
+const PREVIEW_MAX_SECONDS = 15; // 很長的一句只認最後 15 秒，免得越講越慢
+export function createPreviewer({ model, threads = 2, log = () => {} }) {
+  let recognizer = null;
+  let sherpa = null;
+  try {
+    const modelFile = join(model, 'model.int8.onnx');
+    const tokens = join(model, 'tokens.txt');
+    if (!existsSync(modelFile) || !existsSync(tokens)) {
+      log(`沒有本機模型（${model}），講話中不顯示即時預覽`);
+      return null;
+    }
+    sherpa = require('sherpa-onnx-node');
+    recognizer = new sherpa.OfflineRecognizer({
+      featConfig: { sampleRate: 16000, featureDim: 80 },
+      modelConfig: { senseVoice: { model: modelFile, language: 'auto', useInverseTextNormalization: 1 }, tokens, numThreads: threads, provider: 'cpu', debug: 0 },
+    });
+  } catch (err) {
+    log(`即時預覽的本機模型載不起來，不顯示預覽：${err.message}`);
+    return null;
+  }
+  const resampler = new sherpa.LinearResampler(24000, 16000);
+  return {
+    async recognize(pcm) {
+      const keep = PREVIEW_MAX_SECONDS * 48000;
+      const tail = pcm.length > keep ? pcm.subarray(pcm.length - keep) : pcm;
+      const i16 = new Int16Array(tail.buffer, tail.byteOffset, Math.floor(tail.length / 2));
+      resampler.reset();
+      const samples = resampler.flush(Float32Array.from(i16, (v) => v / 32768));
+      const stream = recognizer.createStream();
+      stream.acceptWaveform({ samples, sampleRate: 16000 });
+      await recognizer.decodeAsync(stream);
+      return recognizer.getResult(stream).text ?? '';
+    },
+  };
+}

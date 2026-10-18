@@ -5,6 +5,7 @@
 // 固定寬度、不加字（加字會讓旁邊的圖示跳來跳去），顏色交給系統（範本圖，跟其他選單列圖示同色）。
 // 選單可以切 AI 整理（關／OpenAI／DeepSeek／Claude）、自動找輸入框、語音指令，改的是設定檔，常駐程式會自己換；
 // 「換回原文」把上一段 AI 整理過的字換回轉寫原稿。
+// 游標旁的小框（bubble 事件）：講話中即時顯示聽到的字、整理中、已貼上幾秒、指令做到哪一步、出錯，不搶焦點、滑鼠點不到。
 // BUILD（{ node, repo, state }）由外殼放在全域。
 const LISTEN = `${BUILD.repo}/bin/listen.mjs`;
 const NODE_DIR = BUILD.node.replace(/\/[^/]*$/, '');
@@ -350,6 +351,181 @@ function showFlash(kind, ms) {
   $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(ms / 1000 + 0.05, controller, 'flashEnd:', $(), false);
 }
 
+// ── 游標旁的小框 ──
+// 放在游標下面（下面放不下就放上面）；拿不到游標放視窗下方中間，都沒有就放主螢幕下方中間。
+// 左邊一條色條看狀態：藍＝聽著／整理中、綠＝已貼上／完成、橘＝沒貼上／沒完成、紅＝出錯。
+const BUBBLE_MAX_TEXT_W = 420;
+const BUBBLE_PAD_X = 14;
+const BUBBLE_PAD_Y = 8;
+const BUBBLE_BAR_W = 3;
+const BUBBLE_MAX_CHARS = 84; // 內文最多三行：一行約 30 個中文字，只留最後這麼多字，最新的字才一定看得到
+// 結果顯示多久就淡出（秒）；聽著、整理中、指令做到一半會一直留著，20 秒沒新消息才收
+const BUBBLE_HOLD = { pasted: 1.4, done: 1.8, nofield: 3, failed: 3.5, error: 4 };
+let bubblePanel = null;
+let bubbleTitle = null;
+let bubbleBody = null;
+let bubbleBar = null;
+let bubbleSpinner = null;
+let bubbleTimer = null;
+let bubbleVisible = false;
+let bubbleWidth = 0; // 同一次顯示中寬度只變寬不變窄，字一直變時小框才不會左右跳
+
+function makeBubble() {
+  // 無邊框、不會變成作用中的視窗（不搶游標）、滑鼠點穿過去、每個桌面和全螢幕 app 上都看得到
+  const panel = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, 200, 40), 1 << 7, 2, false);
+  panel.setFloatingPanel(true);
+  panel.setLevel(101); // 跟彈出選單同一層：蓋過一般視窗
+  panel.setOpaque(false);
+  panel.setBackgroundColor($.NSColor.clearColor);
+  panel.setHasShadow(true);
+  panel.setIgnoresMouseEvents(true);
+  panel.setHidesOnDeactivate(false);
+  panel.setCollectionBehavior((1 << 0) | (1 << 4) | (1 << 6) | (1 << 8)); // 所有桌面、不跟著切桌面動、不進 Cmd+`、全螢幕 app 旁邊
+  panel.setAppearance($.NSAppearance.appearanceNamed('NSAppearanceNameDarkAqua'));
+  // 實心深色底（92% 不透明）：半透明的毛玻璃在白色背景上會變灰，白字看不清楚
+  const fx = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 200, 40));
+  fx.setWantsLayer(true);
+  fx.layer.setBackgroundColor($.NSColor.colorWithSRGBRedGreenBlueAlpha(0.11, 0.11, 0.12, 0.92).CGColor);
+  fx.layer.setCornerRadius(10);
+  fx.layer.setMasksToBounds(true);
+  panel.setContentView(fx);
+  bubbleBar = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, BUBBLE_BAR_W, 40));
+  bubbleBar.setWantsLayer(true);
+  bubbleBar.layer.setCornerRadius(1.5);
+  fx.addSubview(bubbleBar);
+  bubbleTitle = $.NSTextField.labelWithString('');
+  bubbleTitle.setLineBreakMode(4); // 太長截尾巴
+  fx.addSubview(bubbleTitle);
+  bubbleBody = $.NSTextField.wrappingLabelWithString('');
+  bubbleBody.setFont($.NSFont.systemFontOfSize(13));
+  bubbleBody.setTextColor($.NSColor.labelColor);
+  bubbleBody.setMaximumNumberOfLines(3);
+  bubbleBody.setPreferredMaxLayoutWidth(BUBBLE_MAX_TEXT_W);
+  fx.addSubview(bubbleBody);
+  // 整理中、指令做到一半：標題旁一個小的轉圈
+  bubbleSpinner = $.NSProgressIndicator.alloc.initWithFrame($.NSMakeRect(0, 0, 12, 12));
+  bubbleSpinner.setStyle(1);
+  bubbleSpinner.setControlSize(2);
+  bubbleSpinner.setIndeterminate(true);
+  bubbleSpinner.setDisplayedWhenStopped(false);
+  fx.addSubview(bubbleSpinner);
+  bubblePanel = panel;
+}
+
+// 小框的標題、內文、色條顏色，以及標題要不要醒目（沒貼上、出錯）
+function bubbleContent(e) {
+  const blue = $.NSColor.systemBlueColor;
+  const green = $.NSColor.systemGreenColor;
+  const orange = $.NSColor.systemOrangeColor;
+  const step = e.detail ? `\n${e.detail}` : '';
+  const secs = e.seconds ? e.seconds.toFixed(1) : '';
+  switch (e.state) {
+    case 'hearing': return e.text ? [t('聽到', 'Hearing'), e.text, blue] : [t('聽著…', 'Listening…'), '', blue];
+    case 'working': return [t('整理中', 'Cleaning up'), e.text, blue];
+    case 'pasted': return [secs ? t(`已貼上（講完後 ${secs} 秒）`, `Pasted (${secs} s after you stopped)`) : t('已貼上', 'Pasted'), '', green];
+    case 'command': return [t('語音指令', 'Voice command'), `${e.text}${step}`, blue];
+    case 'done': return [t('指令完成', 'Command done'), e.text, green];
+    case 'failed': return [t('指令沒完成', 'Command not done'), `${e.text}${step}`, orange, true];
+    case 'nofield': return [t('游標不在輸入框，這段沒貼上', 'Not in a text field; nothing was pasted'),
+      t('點選單列的 JarvisVoice →「複製上一句」可以拿回來', 'Get it back from JarvisVoice in the menu bar → "Copy last sentence"'), orange, true];
+    case 'error': return [t('出錯了', 'Something went wrong'), e.text, $.NSColor.systemRedColor, true];
+    default: return null;
+  }
+}
+
+const clipHead = (text) => (text.length > BUBBLE_MAX_CHARS ? `…${text.slice(-BUBBLE_MAX_CHARS)}` : text);
+
+// 小框放哪：at 是左上角原點的螢幕座標（輔助使用的座標），換成 Cocoa 的左下角原點。
+// above：放在游標那行上面（已貼上、完成：剛貼的字從游標往右下長，放下面會蓋到）
+function placeBubble(at, w, h, above) {
+  const screens = $.NSScreen.screens;
+  const fullH = screens.objectAtIndex(0).frame.size.height;
+  let x;
+  let y;
+  let screen = $.NSScreen.mainScreen;
+  if (at) {
+    const px = at.x + Math.min(at.w, 40) / 2;
+    const py = fullH - at.y;
+    for (let i = 0; i < screens.count; i += 1) {
+      const f = screens.objectAtIndex(i).frame;
+      if (px >= f.origin.x && px <= f.origin.x + f.size.width && py >= f.origin.y && py <= f.origin.y + f.size.height) screen = screens.objectAtIndex(i);
+    }
+  }
+  const vf = screen.visibleFrame;
+  if (at && at.kind === 'caret') {
+    x = at.x - BUBBLE_PAD_X;
+    const below = fullH - (at.y + at.h) - 8 - h;
+    const over = fullH - at.y + 8;
+    y = above ? over : below; // 游標下面（像輸入法的候選字）
+    if (!above && y < vf.origin.y + 4) y = over; // 下面放不下：放上面
+    if (above && y + h > vf.origin.y + vf.size.height - 4) y = below;
+  } else if (at && at.kind === 'window') {
+    x = at.x + at.w / 2 - w / 2;
+    y = fullH - (at.y + at.h) + 56; // 視窗下方中間
+  } else {
+    x = vf.origin.x + vf.size.width / 2 - w / 2;
+    y = vf.origin.y + 80;
+  }
+  x = Math.min(Math.max(x, vf.origin.x + 8), vf.origin.x + vf.size.width - w - 8);
+  y = Math.min(Math.max(y, vf.origin.y + 8), vf.origin.y + vf.size.height - h - 8);
+  bubblePanel.setFrameDisplay($.NSMakeRect(x, y, w, h), true);
+}
+
+function showBubble(e) {
+  if (e.state === 'hide' || (view.state !== 'listening' && e.state !== 'error')) { hideBubble(); return; }
+  const content = bubbleContent(e);
+  if (!content) return;
+  if (!bubblePanel) makeBubble();
+  const [title, body, color, loud] = content;
+  const titleOnly = !body;
+  const busy = e.state === 'working' || e.state === 'command';
+  const result = e.state === 'pasted' || e.state === 'done';
+  if (result || !bubbleVisible) bubbleWidth = 0;
+  // 只有一行標題（已貼上、聽著）或沒貼上、出錯時標題亮、粗；有內文時標題是小的灰字
+  bubbleTitle.setFont(titleOnly ? $.NSFont.systemFontOfSizeWeight(13, 0.23) : $.NSFont.systemFontOfSizeWeight(loud ? 12 : 11, loud ? 0.4 : 0.3));
+  bubbleTitle.setTextColor(titleOnly || loud ? $.NSColor.labelColor : $.NSColor.secondaryLabelColor);
+  bubbleTitle.setStringValue(title);
+  bubbleBody.setStringValue(body ? clipHead(body) : '');
+  bubbleBody.setHidden(titleOnly);
+  bubbleBar.layer.setBackgroundColor(color.CGColor);
+  const titleSize = bubbleTitle.fittingSize;
+  const bodySize = titleOnly ? { width: 0, height: 0 } : bubbleBody.fittingSize;
+  const spin = busy ? 16 : 0;
+  const textW = Math.min(BUBBLE_MAX_TEXT_W, Math.max(titleSize.width + spin, bodySize.width, 96, bubbleWidth));
+  bubbleWidth = textW;
+  const left = BUBBLE_PAD_X + BUBBLE_BAR_W + 4;
+  const w = Math.ceil(left + textW + BUBBLE_PAD_X);
+  const gap = titleOnly ? 0 : 2;
+  const h = Math.ceil(BUBBLE_PAD_Y * 2 + titleSize.height + gap + bodySize.height);
+  const titleY = h - BUBBLE_PAD_Y - titleSize.height;
+  bubbleTitle.setFrame($.NSMakeRect(left, titleY, Math.min(titleSize.width, textW - spin), titleSize.height));
+  if (!titleOnly) bubbleBody.setFrame($.NSMakeRect(left, BUBBLE_PAD_Y, textW, bodySize.height));
+  bubbleBar.setFrame($.NSMakeRect(BUBBLE_PAD_X - 2, BUBBLE_PAD_Y + 1, BUBBLE_BAR_W, h - BUBBLE_PAD_Y * 2 - 2));
+  bubbleSpinner.setFrame($.NSMakeRect(left + Math.min(titleSize.width, textW - spin) + 4, titleY + (titleSize.height - 12) / 2, 12, 12));
+  if (busy) bubbleSpinner.startAnimation($());
+  else bubbleSpinner.stopAnimation($());
+  placeBubble(e.at, w, h, result);
+  bubblePanel.setAlphaValue(1);
+  bubblePanel.orderFrontRegardless;
+  bubbleVisible = true;
+  if (bubbleTimer) { bubbleTimer.invalidate; bubbleTimer = null; }
+  bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(BUBBLE_HOLD[e.state] ?? 20, controller, 'bubbleFade:', $(), false);
+}
+
+function hideBubble() {
+  if (bubbleTimer) { bubbleTimer.invalidate; bubbleTimer = null; }
+  if (bubblePanel && bubbleVisible) { bubbleSpinner.stopAnimation($()); bubblePanel.orderOut($()); }
+  bubbleVisible = false;
+}
+
+// 時間到：淡出 0.25 秒再收起來
+function fadeBubble() {
+  bubbleTimer = null;
+  if (!bubblePanel || !bubbleVisible) return;
+  bubblePanel.animator.setAlphaValue(0);
+  bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.3, controller, 'bubbleHide:', $(), false);
+}
+
 function onLine(line) {
   let event;
   try { event = JSON.parse(line); } catch { return; }
@@ -360,7 +536,10 @@ function onLine(line) {
   } else if (event.type === 'state') {
     view = { state: event.state, message: event.message || '', engine: event.engine || view.engine };
     if (view.state !== 'listening') { hearing = false; working = false; }
+    if (view.state !== 'listening' && view.state !== 'error') hideBubble();
     refresh();
+  } else if (event.type === 'bubble') {
+    showBubble(event);
   } else if (event.type === 'hud') {
     // 常駐程式的即時狀態：hearing／listening（有沒有聽到人聲）、level:<0–1>（說話中的音量）、
     // working／idle（辨識中開始、結束）、pasted、nofield
@@ -394,6 +573,7 @@ function onEnded() {
   task = null;
   hearing = false;
   working = false;
+  hideBubble();
   if (quitting) return;
   if (!waitOther) view = { ...view, state: 'off', message: '' };
   refresh();
@@ -475,6 +655,8 @@ ObjC.registerSubclass({
     'dumpFrame:': { types: ['void', ['id']], implementation() { dumpFrame(); } },
     'flashEnd:': { types: ['void', ['id']], implementation() { if (flash && Date.now() >= flash.until) { flash = null; refresh(); } } },
     'animate:': { types: ['void', ['id']], implementation() { refresh(); } },
+    'bubbleFade:': { types: ['void', ['id']], implementation() { fadeBubble(); } },
+    'bubbleHide:': { types: ['void', ['id']], implementation() { bubbleTimer = null; hideBubble(); } },
   },
 });
 
