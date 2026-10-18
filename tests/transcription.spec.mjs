@@ -380,3 +380,127 @@ test('即時轉寫（Mac 小程式）：有聲音才連線；帶 header 與 sess
   assert.equal(FakeSocket.all.length, 2);
   t.close();
 });
+
+// 提早轉寫（earlyTranscribe）：講 1 秒、停 0.5 秒、再講 0.5 秒、停 1 秒。不提早是一句；停 0.4 秒就先 commit
+const pauseThenResume = (speak) => { speak(10); speak(5, 0); speak(5); speak(10, 0); };
+const sentAudio = (socket) => socket.sent.filter((e) => e.type === 'input_audio_buffer.append' || e.type === 'input_audio_buffer.commit');
+
+test('提早轉寫預設關：停 0.5 秒不切，整段一句', async () => {
+  const { session, speak } = startSpeech();
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  pauseThenResume(speak);
+  assert.equal(socket.commits(), 1);
+  session.close();
+});
+
+test('提早轉寫 split：停 0.4 秒先 commit，又開口的是新的一句；聲音不重送，句尾的靜音不送', async () => {
+  const off = startSpeech();
+  await tick();
+  FakeSocket.all[0].open();
+  pauseThenResume(off.speak);
+  await tick(260);
+  const baseline = FakeSocket.all[0].audioBytes();
+  off.session.close();
+
+  FakeSocket.all = [];
+  const transcripts = [];
+  const { session, items, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: 'split', onTranscript: (t) => transcripts.push(t) });
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  speak(10);
+  speak(4, 0);
+  assert.equal(socket.commits(), 1); // 停 0.4 秒：先 commit
+  speak(1, 0);
+  speak(5);
+  speak(10, 0);
+  await tick(260);
+  assert.equal(socket.commits(), 2); // 又開口那段在它自己停 0.4 秒時 commit，0.85 秒斷句時不再 commit
+  // 少送的是第二段停 0.4 秒以後的靜音（5 批，含斷句那批）；第一段後面的停頓跟著第二段送
+  assert.equal(socket.audioBytes(), baseline - 5 * 4800);
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'a' });
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'b' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'a', transcript: '我覺得可以，' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'b', transcript: '但是預算要再算。' });
+  assert.equal(await session.finish(), '我覺得可以，但是預算要再算。');
+  assert.ok(items.get('b').startMs > items.get('a').startMs + 1000); // 第二段的時間從又開口算
+});
+
+test('提早轉寫 resend：又開口時先送的那份作廢、整句從頭重送，字跟不提早一樣只有一句', async () => {
+  const transcripts = [];
+  const logs = [];
+  const { session, items, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: 'resend', onTranscript: (t) => transcripts.push(t), log: (m) => logs.push(m) });
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  speak(10);
+  speak(4, 0);
+  assert.equal(socket.commits(), 1);
+  const firstPiece = socket.audioBytes();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'early' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'early', delta: '我覺得可以' });
+  speak(1, 0);
+  speak(5); // 又開口：作廢、重送
+  assert.ok(logs.some((m) => /early commit discarded, resent/.test(m)));
+  assert.equal(transcripts.at(-1), ''); // 作廢那句的字不算
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'early', transcript: '我覺得可以。' });
+  assert.equal(transcripts.at(-1), '');
+  assert.equal(items.get('early').text, '');
+  speak(10, 0);
+  await tick(260);
+  assert.equal(socket.commits(), 2);
+  // 兩次 commit 之間送的是整句從頭：先送過的 14 批（10 批講話＋停 4 批）再送一次，加上第 5 批停頓、又開口的 5 批、停 0.4 秒的 4 批
+  const ops = sentAudio(socket);
+  const lastCommit = ops.findLastIndex((e) => e.type === 'input_audio_buffer.commit');
+  const firstCommit = ops.findIndex((e) => e.type === 'input_audio_buffer.commit');
+  const resent = ops.slice(firstCommit + 1, lastCommit).reduce((sum, e) => sum + Buffer.from(e.audio, 'base64').length, 0);
+  assert.equal(resent, firstPiece + (1 + 5 + 4) * 4800);
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'whole' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'whole', transcript: '我覺得可以，但是預算要再算。' });
+  assert.equal(await session.finish(), '我覺得可以，但是預算要再算。');
+});
+
+test('提早轉寫：停 0.4 秒先送後就按停止，不再 commit，直接等先送的那份', async () => {
+  for (const mode of ['split', 'resend']) {
+    FakeSocket.all = [];
+    const { session, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: mode });
+    await tick();
+    const socket = FakeSocket.all[0];
+    socket.open();
+    speak(10);
+    speak(6, 0);
+    const done = session.finish();
+    await tick();
+    assert.equal(socket.commits(), 1, mode);
+    socket.emit({ type: 'input_audio_buffer.committed', item_id: 'x' });
+    socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'x', transcript: '好' });
+    assert.equal(await done, '好', mode);
+  }
+});
+
+test('提早轉寫 resend：作廢的句子 commit 還沒確認就作廢，回來的字也不算；斷線重連不會把它算回來', async () => {
+  const { session, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: 'resend' });
+  await tick();
+  const first = FakeSocket.all[0];
+  first.open();
+  speak(10);
+  speak(4, 0);
+  speak(3); // 先送的那份還沒 committed 就又開口
+  speak(10, 0);
+  await tick(260);
+  assert.equal(first.commits(), 2);
+  first.drop();
+  await tick(20);
+  const second = FakeSocket.all[1];
+  second.open();
+  await tick();
+  // 重連後照原順序補送：作廢那句的 commit 也在裡面
+  assert.equal(second.commits(), 2);
+  second.emit({ type: 'input_audio_buffer.committed', item_id: 'dropped' });
+  second.emit({ type: 'input_audio_buffer.committed', item_id: 'kept' });
+  second.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'dropped', transcript: '我覺得' });
+  second.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'kept', transcript: '我覺得可以' });
+  assert.equal(await session.finish(), '我覺得可以');
+});

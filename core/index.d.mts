@@ -77,6 +77,7 @@ export class AudioTurnDetector {
   readonly currentStartMs: number | null;
   silenceMs: number;
   lastVoiced: boolean;
+  lastVoiceEnd: number;
   shortBlips: number;
   push(samples: Int16Array, startMs: number): AudioTurn | null;
   finish(): AudioTurn | null;
@@ -125,6 +126,8 @@ export interface Transcriber {
   waitForOpen(): Promise<void>;
   waitFor(target?: number): Promise<void>;
   finish(): Promise<string>;
+  /** 這句作廢：字不算進全文、不用等它回來 */
+  discard(sequence: number): void;
   idle(state?: { active?: boolean; quietForMs?: number; speaking?: boolean }): void;
   close(): void;
 }
@@ -143,6 +146,9 @@ export interface SpeechTranscription {
 export function createSpeechTranscription(options: Omit<TranscriberOptions, 'onPending' | 'startHint' | 'elapsed'> & {
   recordingStartedAt?: number;
   onActivity?: (activity: VoiceActivity) => void;
+  /** 停 earlyTranscribeMs 就先 commit；又開口時 split＝切成兩句，resend＝作廢重送整句（多計費）。預設關 */
+  earlyTranscribe?: false | 'split' | 'resend';
+  earlyTranscribeMs?: number;
 }): SpeechTranscription;
 export function permanentError(message: string): Error & { permanent: true };
 export function base64FromBytes(bytes: Uint8Array): string;
