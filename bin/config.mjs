@@ -1,7 +1,7 @@
 // 設定：~/.voice-dictation/config.json（VOICE_DICTATION_CONFIG 可指定別的檔），沒寫的照預設。
 //
 // {
-//   "engine": "local",                 // local（本機 SenseVoice，免費）| openai（自己的 OpenAI key）| parallelsandbox
+//   "engine": "local",                 // local（本機 SenseVoice，免費）| openai（自己的 OpenAI key）| cubelv（用 CubeLV 登入，扣點數）| parallelsandbox
 //   "apps": ["*"],                     // 這些 app 在最前面時才收音（bundle id）；"*" 是全部
 //   "excludeApps": ["us.zoom.xos"],    // 這些 app 在最前面時不收音（開會、通話用的 app）
 //   "output": "traditional",           // traditional（台灣正體）| simplified | original
@@ -14,9 +14,12 @@
 //                                      // prompt：一兩句話講這是什麼場合；keywords／vocabularyFile：會講到的專有名詞，一行一個
 //                                      // languages：預期的語言（例如 ["zh", "en"]）；舊的 language 單一字串也接受
 //   "parallelsandbox": { "apiKey": "", "apiUrl": "https://api.parallelsandbox.com" },
+//   "cubelv": { "apiUrl": "https://app-api.cubelv.com" },
+//                                      // 用 CubeLV 登入（選單「用 CubeLV 登入…」）：不用 key，轉寫與 AI 整理扣 CubeLV 點數。
+//                                      // token 存在鑰匙圈，不寫進這個檔；登入時記下原本的 engine 與 AI 整理（previous），登出時換回來
 //   "ai": {                            // AI 整理（Typeless 的做法）：一段話講完，帶上下文交給 AI 整理再貼
 //     "enabled": true,                 // 三層預設都開；沒有 AI 的 key 時只跑第一層
-//     "provider": "deepseek",          // openai | deepseek | claude；沒寫就用已經有 key 的那家（DeepSeek → Claude → OpenAI）
+//     "provider": "deepseek",          // openai | deepseek | claude | cubelv（用 CubeLV 登入）；沒寫就用已經有 key 的那家（DeepSeek → Claude → OpenAI）
 //     "models": {},                    // 換模型：{ "openai": "gpt-6-luna", "deepseek": "deepseek-flash", "claude": "claude-haiku-5-5" }
 //     "keys": {}, "keyFiles": {},      // 各家的 key，或放 key 的檔案（純 key 或 .env）；沒寫就看環境變數，OpenAI 沿用 openai 的 key
 //     "keyCommands": {},               // 或用指令拿 key，key 不落地：{ "deepseek": "aws ssm get-parameter ... --output text" }
@@ -52,8 +55,9 @@ import { join } from 'node:path';
 export const STATE_DIR = process.env.VOICE_DICTATION_STATE_DIR || join(homedir(), '.voice-dictation');
 export const CONFIG_PATH = process.env.VOICE_DICTATION_CONFIG || join(STATE_DIR, 'config.json');
 export const DEFAULT_MODEL = 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
-export const ENGINES = ['local', 'openai', 'parallelsandbox'];
-export const AI_PROVIDERS = ['openai', 'deepseek', 'claude'];
+export const ENGINES = ['local', 'openai', 'cubelv', 'parallelsandbox'];
+export const AI_PROVIDERS = ['openai', 'deepseek', 'claude', 'cubelv'];
+export const CUBELV_ACCOUNT = join(STATE_DIR, 'cubelv-account.json');
 const KEY_VARS = { openai: 'OPENAI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', claude: 'ANTHROPIC_API_KEY' };
 
 // 各類 app 的語氣：bundle id 或網域都可以當 key
@@ -89,6 +93,7 @@ export function defaults() {
       keywords: [], vocabularyFile: join(STATE_DIR, 'vocabulary.txt'),
     },
     parallelsandbox: { apiKey: '', apiUrl: 'https://api.parallelsandbox.com' },
+    cubelv: { apiUrl: 'https://app-api.cubelv.com' },
     ai: {
       enabled: true, provider: 'deepseek', models: {}, keys: {}, keyFiles: {}, keyCommands: {},
       segmentPauseMs: 1800, contextChars: 400, screenChars: 1500, timeoutMs: 6000, styles: {},
@@ -175,8 +180,25 @@ function keyFromCommand(command) {
   return key;
 }
 
-// AI 整理用哪把 key：設定檔 keys → keyFiles → keyCommands → 環境變數；OpenAI 沿用轉寫的 key
+// 用 CubeLV 登入了沒（bin/cubelv.mjs 登入時寫、登出或登入失效時刪的帳號紀錄，不是秘密）：回傳 { apiUrl, email } 或 null。
+// 登入的是別的 CubeLV（cubelv.apiUrl 換了）也算沒登入
+export function cubelvAccount(config) {
+  try {
+    const account = JSON.parse(readFileSync(CUBELV_ACCOUNT, 'utf8'));
+    return account?.apiUrl === config.cubelv.apiUrl ? account : null;
+  } catch {
+    return null;
+  }
+}
+
+// 這家 AI 能不能用：CubeLV 看有沒有登入，其他看有沒有 key
+export function aiAvailable(config, provider = config.ai.provider) {
+  return provider === 'cubelv' ? !!cubelvAccount(config) : !!aiKey(config, provider);
+}
+
+// AI 整理用哪把 key：設定檔 keys → keyFiles → keyCommands → 環境變數；OpenAI 沿用轉寫的 key（CubeLV 不用 key）
 export function aiKey(config, provider = config.ai.provider) {
+  if (provider === 'cubelv') return '';
   const ai = config.ai;
   return ai.keys?.[provider] || keyFromFile(ai.keyFiles?.[provider], KEY_VARS[provider]) || keyFromCommand(ai.keyCommands?.[provider])
     || process.env[KEY_VARS[provider]] || (provider === 'openai' ? config.openai.apiKey : '') || '';
@@ -201,9 +223,9 @@ const mtime = (file) => {
   try { return statSync(file.replace(/^~(?=\/)/, homedir())).mtimeMs; } catch { return 0; }
 };
 
-// 設定檔或詞彙檔有改就換新設定
+// 設定檔、詞彙檔或 CubeLV 登入狀態有改就換新設定
 export function configMtime(config) {
-  return `${mtime(CONFIG_PATH)}:${config?.openai?.vocabularyFile ? mtime(config.openai.vocabularyFile) : 0}`;
+  return `${mtime(CONFIG_PATH)}:${config?.openai?.vocabularyFile ? mtime(config.openai.vocabularyFile) : 0}:${mtime(CUBELV_ACCOUNT)}`;
 }
 
 // 回傳 { config, error }：設定檔壞掉時照預設跑，error 說哪裡壞。
@@ -220,6 +242,7 @@ export function loadConfig() {
     local: { ...base.local, ...file.local },
     openai: { ...base.openai, ...file.openai },
     parallelsandbox: { ...base.parallelsandbox, ...file.parallelsandbox },
+    cubelv: { ...base.cubelv, ...file.cubelv },
     replacements: { ...base.replacements, ...file.replacements },
     ai: { ...base.ai, ...file.ai, autoVocabulary: { ...base.ai.autoVocabulary, ...file.ai?.autoVocabulary } },
     jev: { ...base.jev, ...file.jev },
@@ -250,5 +273,6 @@ export function loadConfig() {
   const ps = parallelSandboxFromClaudeJson();
   config.parallelsandbox.apiKey = config.parallelsandbox.apiKey || process.env.PARALLELSANDBOX_API_KEY || ps.apiKey || '';
   config.parallelsandbox.apiUrl = (process.env.PARALLELSANDBOX_API_URL || ps.apiUrl || config.parallelsandbox.apiUrl).replace(/\/+$/, '');
+  config.cubelv.apiUrl = String(process.env.VOICE_DICTATION_CUBELV_URL || config.cubelv.apiUrl || base.cubelv.apiUrl).replace(/\/+$/, '');
   return { config, error };
 }

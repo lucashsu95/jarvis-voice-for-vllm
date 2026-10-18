@@ -135,10 +135,11 @@ node ~/jarvis-voice/bin/vocab-test.mjs --mic    # 使用者自己念
 | OpenAI | 約 1.1 秒 | 跟轉寫同一把（用 `openai` 引擎的人已經有了） | 不用另外申請，最省事 |
 | DeepSeek | 約 0.75 秒，最快 | https://platform.deepseek.com 申請 API key、儲值 | 台灣平日 9–12、14–18 點價格加倍，仍然很便宜 |
 | Claude | 約 0.85 秒 | https://console.anthropic.com 申請 API key | |
+| 用 CubeLV 登入 | 約 1 秒 | 不用 key，扣 CubeLV 帳號的點數 | 有 CubeLV 帳號、不想自己管 key 的人；請他從選單按「用 CubeLV 登入…」在瀏覽器按允許，第 10、11 步的 key 都跳過 |
 
 使用者沒有偏好就建議：已經用 OpenAI 轉寫的選 OpenAI；想要最快的選 DeepSeek。
 
-### 10. 放 key（OpenAI 而且轉寫已經有 key 的，跳過這步）
+### 10. 放 key（OpenAI 而且轉寫已經有 key 的、用 CubeLV 登入的，跳過這步）
 
 請使用者自己在終端機跑下面這行，把 key 貼進去（貼的時候畫面不會顯示）。把 `DEEPSEEK_API_KEY`、`deepseek.env` 換成他選的那家：DeepSeek 用 `DEEPSEEK_API_KEY`，Claude 用 `ANTHROPIC_API_KEY`，OpenAI 用 `OPENAI_API_KEY`。
 
@@ -174,6 +175,7 @@ key 已經放在密碼管理或雲端的，改用指令拿，key 不落地（設
 
 - 用 `keyCommands` 的話把 `keyFiles` 換成 `"keyCommands": { "deepseek": "<上表的指令>" }`。
 - 選 OpenAI 而且轉寫已經有 key：只要 `"ai": { "enabled": true, "provider": "openai" }`。
+- 用 CubeLV 登入：登入時會自己寫好，不用改設定檔；只要確認 `autoFocus`、`commands` 照他的選擇。
 - 存檔後幾秒內自動套用。之後要換家、開關功能，直接用選單「AI 整理」「自動找輸入框」「語音指令」。
 - 想調語氣可以加 `ai.styles`，例如 `{ "com.tinyspeck.slackmacgap": "口語、簡短" }`（key 是 app 的 bundle id 或網站網域）；沒寫會用內建的聊天、email、給 AI 的指令、文件四種語氣。
 - **Jev（選用）**：自動找輸入框和語音指令的決策器，一步約 0.2 秒。TypeSafe（https://typesafe.ai）的 key，可能暫停註冊中。有的話照第 10 步存成 `~/.config/jarvis-voice/jev.env`（變數名 `TYPESAFE_API_KEY`），設定檔加 `"jev": { "apiKeyFile": "~/.config/jarvis-voice/jev.env" }`。沒有也能用，會改問上面選的 AI，一步約 1 秒。

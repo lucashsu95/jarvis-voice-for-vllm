@@ -3,20 +3,30 @@
 // 帶起常駐程式 bin/listen.mjs（它掛了 3 秒後自己重開），狀態全顯示在選單列的圖示上。
 // 圖示平常是「JarvisVoice」標誌：單循環箭頭包住三條聲波（自動＋聲音）；有事時整個換成大圖（看「選單列圖示」那段）。
 // 固定寬度、不加字（加字會讓旁邊的圖示跳來跳去），顏色交給系統（範本圖，跟其他選單列圖示同色）。
-// 選單可以切 AI 整理（關／OpenAI／DeepSeek／Claude）、自動找輸入框、語音指令，改的是設定檔，常駐程式會自己換；
+// 選單可以切轉寫（本機／OpenAI／CubeLV／平行沙盒）、AI 整理（關／OpenAI／DeepSeek／Claude／CubeLV）、自動找輸入框、語音指令，
+// 改的是設定檔，常駐程式會自己換；「用 CubeLV 登入…」帶起 bin/cubelv-login.mjs（瀏覽器登入，不用 key、扣 CubeLV 點數），
+// 跟自己的 key、本機辨識並列，不是預設；
 // 「換回原文」把上一段 AI 整理過的字換回轉寫原稿。
 // 游標旁的小框（bubble 事件）：講話中即時顯示聽到的字、整理中、已貼上、指令做到哪一步、出錯，不搶焦點、滑鼠點不到。
 // BUILD（{ node, repo, state }）由外殼放在全域。
 const LISTEN = `${BUILD.repo}/bin/listen.mjs`;
+const LOGIN = `${BUILD.repo}/bin/cubelv-login.mjs`;
 const NODE_DIR = BUILD.node.replace(/\/[^/]*$/, '');
 // 系統語言是中文就顯示中文，其他都用英文（VOICE_DICTATION_LANG 可以指定，測試用）
 const LANG = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('VOICE_DICTATION_LANG'))
   || ObjC.unwrap($.NSLocale.preferredLanguages.firstObject) || '';
 const ZH = /^zh/i.test(LANG);
 const t = (zh, en) => (ZH ? zh : en);
-const ENGINE_NAMES = { local: t('本機', 'on-device'), openai: 'OpenAI', parallelsandbox: t('平行沙盒', 'ParallelSandbox') };
+const ENGINE_NAMES = { local: t('本機', 'on-device'), openai: 'OpenAI', cubelv: 'CubeLV', parallelsandbox: t('平行沙盒', 'ParallelSandbox') };
+// 轉寫子選單：免費的本機排第一，CubeLV 跟自己的 key 並列
+const ENGINE_ITEMS = {
+  local: t('本機（免費，聲音不離開電腦）', 'On-device (free, audio stays on your Mac)'),
+  openai: t('OpenAI（自己的 key）', 'OpenAI (your own key)'),
+  cubelv: t('CubeLV（扣 CubeLV 點數，不用 key）', 'CubeLV (uses CubeLV credits, no key)'),
+  parallelsandbox: t('平行沙盒', 'ParallelSandbox'),
+};
 const GUIDE_URL = 'https://github.com/urusaqqrun/jarvis-voice#readme';
-const AI_NAMES = { openai: 'OpenAI', deepseek: 'DeepSeek', claude: 'Claude' };
+const AI_NAMES = { openai: 'OpenAI', deepseek: 'DeepSeek', claude: 'Claude', cubelv: 'CubeLV' };
 
 let statusItem = null;
 let statusLine = null;
@@ -33,7 +43,16 @@ let levelAt = 0;
 let animTimer = null; // 說話中、辨識中時每 0.1 秒換一張圖
 let flash = null; // { kind: 'pasted' | 'nofield', until }：短暫顯示的結果
 // 常駐程式報上來的設定（settings 事件）
-let settings = { ai: { enabled: false, provider: 'deepseek', ready: false }, autoFocus: false, commands: false, decider: '' };
+let settings = {
+  engine: '', ai: { enabled: false, provider: 'deepseek', ready: false }, autoFocus: false, commands: false, decider: '',
+  cubelv: { loggedIn: false, email: '' },
+};
+let engineMenuItem = null;
+const engineItems = {};
+let cubelvItem = null;
+let loginTask = null; // 正在跑的 bin/cubelv-login.mjs
+let loginKind = ''; // in（登入中）| out（登出中）
+let loginBuffer = '';
 let aiMenuItem = null;
 let aiOffItem = null;
 const aiItems = {};
@@ -234,6 +253,8 @@ function uiSnapshot() {
     ai: ObjC.unwrap(aiMenuItem.title),
     checked: [aiOffItem, ...Object.values(aiItems), autoFocusItem, commandsItem].map((item) => item.state).join(''),
     commands: ObjC.unwrap(commandsItem.title),
+    engine: ObjC.unwrap(engineMenuItem.title),
+    cubelv: ObjC.unwrap(cubelvItem.title),
   };
 }
 
@@ -273,9 +294,21 @@ function refresh() {
 }
 
 function refreshSettings() {
-  if (!aiMenuItem) return;
+  if (!aiMenuItem || !cubelvItem) return;
   const { ai } = settings;
-  aiMenuItem.setTitle(`${t('AI 整理：', 'AI cleanup: ')}${ai.enabled ? `${AI_NAMES[ai.provider]}${ai.ready ? '' : t('（沒有 key）', ' (no key)')}` : t('關', 'Off')}`);
+  const signedOut = t('（未登入）', ' (not signed in)');
+  const missing = ai.provider === 'cubelv' ? signedOut : t('（沒有 key）', ' (no key)');
+  aiMenuItem.setTitle(`${t('AI 整理：', 'AI cleanup: ')}${ai.enabled ? `${AI_NAMES[ai.provider]}${ai.ready ? '' : missing}` : t('關', 'Off')}`);
+  const engine = settings.engine;
+  engineMenuItem.setTitle(`${t('轉寫：', 'Transcription: ')}${ENGINE_NAMES[engine] ?? engine}${engine === 'cubelv' && !settings.cubelv.loggedIn ? signedOut : ''}`);
+  for (const [name, item] of Object.entries(engineItems)) item.setState(engine === name ? 1 : 0);
+  cubelvItem.setTitle(loginKind === 'in'
+    ? t('正在等瀏覽器登入 CubeLV…（點這裡取消）', 'Waiting for CubeLV sign-in in your browser… (click to cancel)')
+    : loginKind === 'out' ? t('登出 CubeLV 中…', 'Signing out of CubeLV…')
+      : settings.cubelv.loggedIn
+        ? t(`登出 CubeLV${settings.cubelv.email ? `（${settings.cubelv.email}）` : ''}`, `Sign out of CubeLV${settings.cubelv.email ? ` (${settings.cubelv.email})` : ''}`)
+        : t('用 CubeLV 登入…（不用 key，扣 CubeLV 點數）', 'Sign in with CubeLV… (no key, uses CubeLV credits)'));
+  cubelvItem.setEnabled(loginKind !== 'out');
   aiOffItem.setState(ai.enabled ? 0 : 1);
   for (const [provider, item] of Object.entries(aiItems)) item.setState(ai.enabled && ai.provider === provider ? 1 : 0);
   autoFocusItem.setState(settings.autoFocus ? 1 : 0);
@@ -301,11 +334,89 @@ function updateConfig(change) {
 }
 
 function chooseAi(provider) {
+  // 還沒登入就選 CubeLV：先登入，登入成功才把 AI 整理切過去（轉寫不動）
+  if (provider === 'cubelv' && !settings.cubelv.loggedIn) { runLogin(['--use', 'ai']); return; }
   updateConfig((config) => {
     config.ai = config.ai ?? {};
     config.ai.enabled = !!provider;
     if (provider) config.ai.provider = provider;
   });
+}
+
+function chooseEngine(engine) {
+  if (engine === 'cubelv' && !settings.cubelv.loggedIn) { runLogin(['--use', 'engine']); return; }
+  updateConfig((config) => { config.engine = engine; });
+}
+
+// ── 用 CubeLV 登入／登出：帶起 bin/cubelv-login.mjs，做完就結束；常駐程式看到登入狀態與設定檔改了會自己換 ──
+
+function showAlert(title, text) {
+  $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+  const alert = $.NSAlert.alloc.init;
+  alert.setMessageText(title);
+  alert.setInformativeText(text);
+  alert.runModal;
+}
+
+function runLogin(args) {
+  if (loginTask) return;
+  try {
+    const task = $.NSTask.alloc.init;
+    task.setLaunchPath(BUILD.node);
+    task.setArguments($([LOGIN, ...args]));
+    const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
+    env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
+    env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
+    env.setObjectForKey($(ZH ? 'zh' : 'en'), $('VOICE_DICTATION_LANG'));
+    task.setEnvironment(env);
+    const pipe = $.NSPipe.pipe;
+    task.setStandardOutput(pipe);
+    task.setStandardError($.NSFileHandle.fileHandleWithNullDevice);
+    const reader = pipe.fileHandleForReading;
+    const center = $.NSNotificationCenter.defaultCenter;
+    center.addObserverSelectorNameObject(controller, 'loginOut:', $.NSFileHandleReadCompletionNotification, reader);
+    center.addObserverSelectorNameObject(controller, 'loginEnded:', $.NSTaskDidTerminateNotification, task);
+    reader.readInBackgroundAndNotify;
+    task.launch;
+    loginTask = task;
+    loginKind = args[0] === 'logout' ? 'out' : 'in';
+    loginBuffer = '';
+  } catch (err) {
+    showAlert(t('CubeLV 登入開不起來', "Couldn't start CubeLV sign-in"), String(err));
+  }
+  refreshSettings();
+}
+
+// 選單的「用 CubeLV 登入…／登出 CubeLV」：登入中再按一次是取消
+function cubelvAction() {
+  if (loginTask) { if (loginKind === 'in') loginTask.terminate; return; }
+  runLogin(settings.cubelv.loggedIn ? ['logout'] : []);
+}
+
+function onLoginLine(line) {
+  let event;
+  try { event = JSON.parse(line); } catch { return; }
+  if (event.type !== 'cubelv') return;
+  if (event.state === 'error' && !['cancelled', 'denied'].includes(event.code)) showAlert(t('沒有登入 CubeLV', 'Not signed in to CubeLV'), event.message);
+  else if (event.state === 'done' && event.quotaExceeded) showAlert(t('已登入 CubeLV', 'Signed in to CubeLV'), event.message);
+}
+
+function onLoginOut(note) {
+  const data = note.userInfo.objectForKey($.NSFileHandleNotificationDataItem);
+  if (!data || Number(data.length) === 0) return; // 登入程式結束，等 loginEnded: 處理
+  loginBuffer += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding)) || '';
+  const lines = loginBuffer.split('\n');
+  loginBuffer = lines.pop();
+  for (const line of lines) if (line.trim()) onLoginLine(line.trim());
+  note.object.readInBackgroundAndNotify;
+}
+
+function onLoginEnded() {
+  if (loginBuffer.trim()) onLoginLine(loginBuffer.trim());
+  loginBuffer = '';
+  loginTask = null;
+  loginKind = '';
+  refreshSettings();
 }
 
 // 開關型的設定（autoFocus、commands）：照常駐程式目前報的狀態反過來
@@ -588,6 +699,7 @@ function startListener() {
     const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
     env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
     env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
+    env.setObjectForKey($(ZH ? 'zh' : 'en'), $('VOICE_DICTATION_LANG')); // CubeLV 的提示跟選單同一種語言（從 Finder 開的 app 沒有 LANG）
     t.setEnvironment(env);
     const pipe = $.NSPipe.pipe;
     t.setStandardOutput(pipe);
@@ -609,6 +721,7 @@ function startListener() {
 function quitApp() {
   quitting = true;
   if (task) task.terminate;
+  if (loginTask) loginTask.terminate;
   $.NSApplication.sharedApplication.terminate($());
 }
 
@@ -645,6 +758,14 @@ ObjC.registerSubclass({
     'aiOpenai:': { types: ['void', ['id']], implementation() { chooseAi('openai'); } },
     'aiDeepseek:': { types: ['void', ['id']], implementation() { chooseAi('deepseek'); } },
     'aiClaude:': { types: ['void', ['id']], implementation() { chooseAi('claude'); } },
+    'aiCubelv:': { types: ['void', ['id']], implementation() { chooseAi('cubelv'); } },
+    'engineLocal:': { types: ['void', ['id']], implementation() { chooseEngine('local'); } },
+    'engineOpenai:': { types: ['void', ['id']], implementation() { chooseEngine('openai'); } },
+    'engineCubelv:': { types: ['void', ['id']], implementation() { chooseEngine('cubelv'); } },
+    'engineParallelsandbox:': { types: ['void', ['id']], implementation() { chooseEngine('parallelsandbox'); } },
+    'cubelvLogin:': { types: ['void', ['id']], implementation() { cubelvAction(); } },
+    'loginOut:': { types: ['void', ['id']], implementation(note) { onLoginOut(note); } },
+    'loginEnded:': { types: ['void', ['id']], implementation() { onLoginEnded(); } },
     'toggleAutoFocus:': { types: ['void', ['id']], implementation() { toggleSetting('autoFocus'); } },
     'toggleCommands:': { types: ['void', ['id']], implementation() { toggleSetting('commands'); } },
     'revert:': { types: ['void', ['id']], implementation() { requestRevert(); } },
@@ -686,6 +807,15 @@ function startUI() {
   menu.addItem(menuItem(t('複製上一句', 'Copy last sentence'), 'copyLast:'));
   menu.addItem(menuItem(t('換回原文（上一段 AI 整理前）', 'Revert to original (before AI cleanup)'), 'revert:'));
   menu.addItem($.NSMenuItem.separatorItem);
+  engineMenuItem = menuItem(t('轉寫：', 'Transcription: '), null);
+  const engineMenu = $.NSMenu.alloc.init;
+  engineMenu.setAutoenablesItems(false);
+  for (const [engine, title] of Object.entries(ENGINE_ITEMS)) {
+    engineItems[engine] = menuItem(title, `engine${engine[0].toUpperCase()}${engine.slice(1)}:`);
+    engineMenu.addItem(engineItems[engine]);
+  }
+  engineMenuItem.setSubmenu(engineMenu);
+  menu.addItem(engineMenuItem);
   aiMenuItem = menuItem(t('AI 整理：關', 'AI cleanup: Off'), null);
   const aiMenu = $.NSMenu.alloc.init;
   aiMenu.setAutoenablesItems(false);
@@ -693,7 +823,8 @@ function startUI() {
   aiMenu.addItem(aiOffItem);
   aiMenu.addItem($.NSMenuItem.separatorItem);
   for (const [provider, name] of Object.entries(AI_NAMES)) {
-    aiItems[provider] = menuItem(name, `ai${provider[0].toUpperCase()}${provider.slice(1)}:`);
+    const title = provider === 'cubelv' ? t('CubeLV（扣 CubeLV 點數，不用 key）', 'CubeLV (uses CubeLV credits, no key)') : name;
+    aiItems[provider] = menuItem(title, `ai${provider[0].toUpperCase()}${provider.slice(1)}:`);
     aiMenu.addItem(aiItems[provider]);
   }
   aiMenuItem.setSubmenu(aiMenu);
@@ -705,6 +836,8 @@ function startUI() {
   menu.addItem($.NSMenuItem.separatorItem);
   menu.addItem(menuItem(t('編輯專有名詞…', 'Edit vocabulary…'), 'openVocabulary:'));
   menu.addItem(menuItem(t('編輯設定檔…', 'Edit config…'), 'openConfig:'));
+  cubelvItem = menuItem(t('用 CubeLV 登入…', 'Sign in with CubeLV…'), 'cubelvLogin:');
+  menu.addItem(cubelvItem);
   menu.addItem(menuItem(t('說明', 'Help'), 'openGuide:'));
   menu.addItem($.NSMenuItem.separatorItem);
   menu.addItem(menuItem(t('結束 JarvisVoice', 'Quit JarvisVoice'), 'quitApp:'));

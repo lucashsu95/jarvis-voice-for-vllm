@@ -19,7 +19,7 @@
 //   每次貼上 log 記一行「速度：講完到貼上 X 秒（字回來、整理好、貼上各花多少）」（只記 log，小框不顯示秒數）。
 //
 // 轉寫引擎看設定檔（bin/config.mjs）：local 本機 SenseVoice、openai 自己的 key（預設 gpt-transcribe 一般轉寫，
-// 也可以選 gpt-live-transcribe 即時）、parallelsandbox。設定檔改了會自動換。
+// 也可以選 gpt-live-transcribe 即時）、cubelv（用 CubeLV 登入，扣點數，bin/cubelv.mjs）、parallelsandbox。設定檔改了會自動換。
 // 狀態寫在 status.json 給狀態列讀；有 paused 檔就暫停；有 revert-request 檔就把上一段換回原稿。
 // stdout 每行一個 JSON（state、settings、hud、bubble、pasted、skipped）。
 // 選項：--app 由選單列小程式帶起（log 寫進 listen.log，小程式不在了就結束）。
@@ -32,12 +32,12 @@ import { join } from 'node:path';
 import { createAx } from './ax.mjs';
 import { runCommand } from './commander.mjs';
 import { TurnSplitter, BATCH_BYTES, SAMPLE_RATE, findFfmpeg } from './common.mjs';
-import { STATE_DIR, aiKey, appAllowed, configMtime, isLiveModel, loadConfig, styleFor } from './config.mjs';
+import { STATE_DIR, aiAvailable, aiKey, appAllowed, configMtime, cubelvAccount, isLiveModel, loadConfig, styleFor } from './config.mjs';
 import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment } from './editor.mjs';
 import { DEFAULT_URLS } from '../core/providers.mjs';
 import { createBatchEngine } from './engines/batch.mjs';
 import { createLocalEngine, createPreviewer } from './engines/local.mjs';
-import { createRealtimeEngine, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
+import { createRealtimeEngine, cubelvConnector, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
 import { appendHistory } from './history.mjs';
 import { createDecider, describeElement, fieldQuestions, inFieldIntentQuestion, inFieldVerdict, intentQuestion, referenceQuestion } from './decide.mjs';
 import { createLearner } from './learn.mjs';
@@ -152,27 +152,32 @@ let { config, error: configError } = loadConfig();
 let configStamp = configMtime(config);
 let engine = null;
 
-// AI 整理開著而且有 key 才走第二層
-const aiReady = () => config.ai.enabled && !!aiKey(config);
+// AI 整理開著而且有 key（或用 CubeLV 登入了）才走第二層
+const aiReady = () => config.ai.enabled && aiAvailable(config);
 const aiSettings = () => ({
   provider: config.ai.provider,
   model: config.ai.models[config.ai.provider] || '',
   apiKey: aiKey(config),
   timeoutMs: config.ai.timeoutMs,
+  cubelvUrl: config.cubelv.apiUrl,
 });
 
 function announceSettings() {
   const provider = config.ai.provider;
   const model = config.ai.models[provider] || DEFAULT_MODELS[provider];
   const deciderName = config.jev.apiKey ? 'Jev' : aiReady() ? PROVIDER_NAMES[provider] : '';
+  const account = cubelvAccount(config);
   emit({
     type: 'settings',
+    engine: config.engine,
     ai: { enabled: config.ai.enabled, provider, ready: aiReady() },
     autoFocus: config.autoFocus,
     commands: config.commands,
     decider: deciderName,
+    cubelv: { loggedIn: !!account, email: account?.email ?? '' },
   });
-  log(`AI 整理：${config.ai.enabled ? `${PROVIDER_NAMES[provider]}（${model}）${aiReady() ? '' : '，但沒有 key，先不整理'}` : '關'}；`
+  const missing = provider === 'cubelv' ? '，但還沒用 CubeLV 登入，先不整理' : '，但沒有 key，先不整理';
+  log(`AI 整理：${config.ai.enabled ? `${PROVIDER_NAMES[provider]}（${model}）${aiReady() ? '' : missing}` : '關'}；`
     + `自動找輸入框：${config.autoFocus ? '開' : '關'}；指令模式：${config.commands ? (aiReady() ? '開' : '開，但要先開 AI 整理') : '關'}；`
     + `第三層決策：${deciderName || '沒有（照規則）'}`);
   // 沒有 key 不算錯：只跑第一層，選單會寫「（沒有 key）」
@@ -193,7 +198,7 @@ function startEngine() {
       const text = finishText(raw, {
         output: config.output,
         replacements: config.replacements,
-        alreadyTraditional: config.engine === 'parallelsandbox',
+        alreadyTraditional: config.engine === 'parallelsandbox' || config.engine === 'cubelv',
       });
       if (!isSpeech(text)) {
         log(`轉寫結果：${text ? `「${text}」只有標點` : '（空的）'}，這句沒有字，不寫`);
@@ -212,6 +217,7 @@ function startEngine() {
   if (config.engine === 'local') engine = createLocalEngine({ ...config.local, ...callbacks });
   else if (config.engine === 'openai' && isLiveModel(config.openai.model)) engine = createRealtimeEngine({ connector: openaiConnector(config.openai), ...callbacks });
   else if (config.engine === 'openai') engine = createBatchEngine({ ...config.openai, hedge: config.speed.hedge, ...callbacks });
+  else if (config.engine === 'cubelv') engine = createRealtimeEngine({ connector: cubelvConnector({ ...config.cubelv, language: cubelvLanguage() }), ...callbacks });
   else engine = createRealtimeEngine({ connector: parallelSandboxConnector(config.parallelsandbox), ...callbacks });
   // 講話中的即時預覽：雲端轉寫才需要（本機轉寫本來就快），有小框才看得到
   const wantPreview = config.speed.preview && bubbleOn() && config.engine !== 'local';
@@ -223,6 +229,15 @@ function startEngine() {
   log(`轉寫引擎：${config.engine}${config.engine === 'openai' ? `（${config.openai.model}，詞彙 ${config.openai.keywords.length} 個）` : ''}`);
   if (configError) setError(configError);
   announceSettings();
+}
+
+// CubeLV 轉寫的辨識語言：設定檔 openai.languages 有寫就照它，沒寫看介面語言（中文是 zh-Hant＝繁中夾英文），其他讓模型自己判斷
+function cubelvLanguage() {
+  const langs = config.openai.languages.map((l) => String(l).toLowerCase());
+  if (langs.some((l) => l.startsWith('zh'))) return 'zh-Hant';
+  if (langs.length === 1 && langs[0].startsWith('ja')) return 'ja';
+  if (langs.length === 1 && langs[0].startsWith('en')) return 'en';
+  return !langs.length && /^zh/i.test(process.env.VOICE_DICTATION_LANG || process.env.LANG || '') ? 'zh-Hant' : '';
 }
 
 function reloadConfigIfChanged() {
@@ -692,7 +707,9 @@ function warmUp() {
   if (!config.speed.warm || !(appMode || process.env.VOICE_DICTATION_WARM)) return;
   const urls = [];
   if (config.engine === 'openai' && !isLiveModel(config.openai.model)) urls.push(process.env.VOICE_DICTATION_OPENAI_HTTP_URL || 'https://api.openai.com/v1/audio/transcriptions');
-  if (aiReady()) urls.push(DEFAULT_URLS[config.ai.provider]);
+  if (aiReady() && config.ai.provider !== 'cubelv') urls.push(DEFAULT_URLS[config.ai.provider]);
+  // CubeLV：轉寫與 AI 整理都在同一個網域，暖一條就好（/health 由 router 直接回，不碰後端）
+  if (config.engine === 'cubelv' || (aiReady() && config.ai.provider === 'cubelv')) urls.push(`${config.cubelv.apiUrl}/health`);
   if (commandsOn() && config.jev.apiKey) urls.push(DEFAULT_URLS.jev);
   const now = Date.now();
   for (const url of urls) {
