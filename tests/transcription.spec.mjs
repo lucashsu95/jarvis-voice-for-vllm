@@ -444,9 +444,10 @@ test('提早轉寫 resend：又開口時先送的那份作廢、整句從頭重�
   speak(1, 0);
   speak(5); // 又開口：作廢、重送
   assert.ok(logs.some((m) => /early commit discarded, resent/.test(m)));
-  assert.equal(transcripts.at(-1), ''); // 作廢那句的字不算
+  // 作廢那句的字不算進全文，但畫面上先留著，等重送那句有字才換掉
+  assert.equal(transcripts.at(-1), '我覺得可以');
   socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'early', transcript: '我覺得可以。' });
-  assert.equal(transcripts.at(-1), '');
+  assert.equal(transcripts.at(-1), '我覺得可以。');
   assert.equal(items.get('early').text, '');
   speak(10, 0);
   await tick(260);
@@ -458,7 +459,10 @@ test('提早轉寫 resend：又開口時先送的那份作廢、整句從頭重�
   const resent = ops.slice(firstCommit + 1, lastCommit).reduce((sum, e) => sum + Buffer.from(e.audio, 'base64').length, 0);
   assert.equal(resent, firstPiece + (1 + 5 + 4) * 4800);
   socket.emit({ type: 'input_audio_buffer.committed', item_id: 'whole' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'whole', delta: '我覺得可以，' });
+  assert.equal(transcripts.at(-1), '我覺得可以，'); // 重送那句一出字，作廢那句就不顯示
   socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'whole', transcript: '我覺得可以，但是預算要再算。' });
+  assert.equal(transcripts.at(-1), '我覺得可以，但是預算要再算。');
   assert.equal(await session.finish(), '我覺得可以，但是預算要再算。');
 });
 

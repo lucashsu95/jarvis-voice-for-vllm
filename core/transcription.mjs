@@ -88,8 +88,14 @@ export function createTranscriber({
   };
 
   // 句子照講的順序接起來：中文接中文直接接，英文、數字與中文交界才空一格（跟整理後寫回輸入框同一套，joinPolished）
-  const transcript = () => order
-    .map((id) => { const part = parts.get(id); return part?.dropped ? '' : part?.final ?? part?.draft ?? ''; })
+  // shown：畫面上顯示的（onTranscript）。作廢的句子在後面的句子有字之前先留著，重送那句的字回來才換掉，畫面上的字不會先消失再出現
+  const transcript = (shown = false) => order
+    .map((id, index) => {
+      const part = parts.get(id);
+      const text = part?.final ?? part?.draft ?? '';
+      if (!part?.dropped) return text;
+      return shown && !order.slice(index + 1).some((later) => { const next = parts.get(later); return (next?.final ?? next?.draft ?? '').trim(); }) ? text : '';
+    })
     .filter((text) => text.trim())
     .reduce((joined, text) => joinPolished(joined, text), '');
 
@@ -107,7 +113,7 @@ export function createTranscriber({
     if (part.dropped) onItem?.({ id, startMs: part.startMs ?? elapsed(), endMs: part.endMs, text: '', final: true });
     else onItem?.({ id, startMs: part.startMs ?? elapsed(), endMs: part.endMs, text: part.final ?? part.draft, final: part.final !== null });
   };
-  const publish = () => onTranscript?.(transcript());
+  const publish = () => onTranscript?.(transcript(true));
 
   // received：這句的字拿到了（作廢的句子不算：前面的句子可能還在等，聲音要留著補送）
   const settleTurn = (sequence, received = true) => {
@@ -364,7 +370,7 @@ export function createTranscriber({
     lastSequence: () => turnSequence,
     busy: () => !nothingPending() || connecting,
     get failed() { return fatalError; },
-    transcript,
+    transcript: () => transcript(),
     waitForOpen,
     // 等到序號 ≤ target 的句子都拿到字
     async waitFor(target = turnSequence) {
