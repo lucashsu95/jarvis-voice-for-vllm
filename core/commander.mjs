@@ -162,7 +162,8 @@ export async function runCommand({ screen, decider, log = () => {}, switchApp = 
       return { ok: true, steps: done };
     }
     if (action.choice === 'enter') {
-      const r = await screen.act({ handle: filled, action: 'enter' });
+      // text：剛填的字，畫面接頭用來認「焦點還在填字的那個框」（框重畫成新元件也認得出來）
+      const r = await screen.act({ handle: filled, action: 'enter', text });
       if (r.result !== 'ok') return { ok: false, reason: `按 Enter 沒成功（${r.result}）`, steps: done };
       done.push('按了 Enter');
     } else {

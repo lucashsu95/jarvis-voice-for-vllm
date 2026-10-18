@@ -169,7 +169,9 @@ test('貼上與換回原文（測試視窗在最前面）', {
     // 游標不在剛填的那個框：不按 Enter（游標在訊息框按 Enter 會送出）
     const { candidates } = await ax.call('targets', { pid });
     const subject = candidates.find((c) => c.label === '主旨');
-    assert.equal((await ax.call('act', { pid, handle: subject.handle, action: 'enter' })).result, 'not-focused');
+    assert.match((await ax.call('act', { pid, handle: subject.handle, action: 'enter' })).result, /^not-focused/);
+    // 焦點在多行的訊息框：就算裡面的字跟要搜尋的字一樣也不按
+    assert.match((await ax.call('act', { pid, handle: subject.handle, action: 'enter', text: '' })).result, /^not-focused/);
   } finally {
     win.kill();
     if (startBundle) execFileSync('/usr/bin/open', ['-b', startBundle]);

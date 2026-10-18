@@ -246,7 +246,7 @@ test('指令模式：搜尋框填字 → Enter → 點結果 → 完成；畫面
     goal: '打開台積電（2330）的個股頁', text: '台積電', context: { app: 'AStock' },
   });
   assert.equal(result.ok, true);
-  assert.deepEqual(ax.acts.map((a) => [a.action, a.handle, a.text ?? '']), [['fill', 2, '台積電'], ['enter', 2, ''], ['press', 4, '']]);
+  assert.deepEqual(ax.acts.map((a) => [a.action, a.handle, a.text ?? '']), [['fill', 2, '台積電'], ['enter', 2, '台積電'], ['press', 4, '']]);
   assert.equal(result.steps.length, 3);
   assert.ok(seenOptions[0].includes('刪除自選'), '畫面上的按鈕都要給決策器看');
 });

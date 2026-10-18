@@ -15,7 +15,8 @@
 //   focus   { handle }                → { ok }
 //   read    { handle }                → { value }
 //   elements { pid, limit }           → { window, elements: [{ handle, role, subrole, label, x, y, w, h, focused }] }：畫面上可以操作的東西
-//   act     { pid, handle, action, text, x, y } → { result: ok | gone | not-front | failed }：press 點、fill 填字、enter 按 Enter、
+//   act     { pid, handle, action, text, x, y } → { result: ok | gone | not-front | not-focused:<焦點角色> | failed }：press 點、fill 填字、
+//                                       enter 按 Enter（焦點在剛填 text 的框才按；焦點在框的建議清單裡先按 Esc 收起來）、
 //                                       clickAt 在 (x, y) 點一下滑鼠（截圖認出來的字沒有元件可以按，用這個）
 //   ocr     { pid, ask }              → { permission, items: [{ text, x, y, w, h }] }：截最前面那個視窗（只在記憶體裡）認字；
 //                                       順序與接成文字由 bin/ax.mjs 用核心（core/ocr.mjs）處理
@@ -39,6 +40,7 @@ ObjC.bindFunction('AXUIElementPerformAction', ['int', ['id', 'id']]);
 ObjC.bindFunction('CGWindowListCopyWindowInfo', ['id', ['int', 'int']]);
 ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]);
 ObjC.bindFunction('CGRequestScreenCaptureAccess', ['bool', []]);
+ObjC.bindFunction('CFEqual', ['bool', ['id', 'id']]);
 
 const TEXT_ROLES = ['AXTextField', 'AXTextArea', 'AXComboBox', 'AXSearchField'];
 const K_CFRANGE = 4; // kAXValueCFRangeType
@@ -380,6 +382,30 @@ const KEY_V = 9;
 const KEY_A = 0;
 const KEY_DELETE = 51;
 const KEY_RETURN = 36;
+const KEY_ESCAPE = 53;
+const POPUP_ROLES = ['AXList', 'AXMenu', 'AXTable', 'AXOutline'];
+
+// 要按 Enter 前，app 的焦點在哪：
+//   field：在剛填字的框（或同一個框重畫出來的元件：單行輸入框，裡面就是剛填的字）
+//   option：在框的建議清單裡被選起來的那一項。網頁搜尋框打完字跳出建議清單、滑鼠剛好停在清單上時，
+//           Chrome 會把焦點報在那一項（aria-activedescendant），框本身的 AXFocused 是 false；這時按 Enter 會打開那一項，不是搜尋
+//   other：別的地方（例如訊息框），不按
+function enterTarget(pid, el, value) {
+  if (flag(el, 'AXFocused') === true) return { where: 'field' };
+  const f = attr(appElement(pid), 'AXFocusedUIElement');
+  if (!f) return { where: 'other', role: '' };
+  if ($.CFEqual(f, el)) return { where: 'field' };
+  const role = text(f, 'AXRole');
+  if (['AXTextField', 'AXComboBox', 'AXSearchField'].includes(role)) {
+    return value && (text(f, 'AXValue') || '').includes(value) ? { where: 'field' } : { where: 'other', role };
+  }
+  let p = attr(f, 'AXParent');
+  for (let i = 0; p && i < 8; i += 1) {
+    if ($.CFEqual(p, el) || POPUP_ROLES.includes(text(p, 'AXRole'))) return { where: 'option', role };
+    p = attr(p, 'AXParent');
+  }
+  return { where: 'other', role };
+}
 
 // 回覆送出後才做的事（貼上後等 app 讀剪貼簿、還原剪貼簿）：node 不用等這 0.35 秒，下一個請求才會等
 let afterReply = null;
@@ -597,8 +623,16 @@ function act({ pid, handle, action, text: value = '', x, y }) {
   }
   if (action === 'enter') {
     if (!front) return { result: $.AXUIElementPerformAction(el, $('AXConfirm')) === 0 ? 'ok' : 'not-front' };
-    // 只在游標確實在剛填字的那個框時按：游標在訊息框按 Enter 會把訊息送出去
-    if (flag(el, 'AXFocused') !== true) return { result: 'not-focused' };
+    // 只在游標確實在剛填字的那個框時按：游標在訊息框按 Enter 會把訊息送出去。
+    // 焦點在框的建議清單裡：先按一次 Esc 收起清單（不按 Enter 去打開被選起來的那一項），框有焦點、字還在才按
+    let at = enterTarget(pid, el, value);
+    if (at.where === 'option') {
+      pressKey(KEY_ESCAPE, false);
+      delay(0.2);
+      at = enterTarget(pid, el, value);
+      if (at.where === 'field' && value && !(text(el, 'AXValue') || '').includes(value)) at = { where: 'other', role: 'cleared' };
+    }
+    if (at.where !== 'field') return { result: `not-focused${at.role ? `:${at.role}` : ''}` };
     pressKey(KEY_RETURN, false);
     return { result: 'ok' };
   }
