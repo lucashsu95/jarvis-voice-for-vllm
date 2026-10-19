@@ -129,18 +129,19 @@ function hudShow(mode) {
 }
 
 // 游標旁的小框（app/ui.js 畫，標題的字也由它照系統語言寫）。state：
-//   hearing（講話中，text 是聽到的字）、working（整理中，text 是轉寫原稿）、pasted、
+//   hearing（講話中，text 是聽到的字；speaker 是聲紋比對：mine 你說的、short 短句、enrolling 正在錄你的聲紋）、
+//   ignored（聲紋不像你、這句不轉寫，text 是本機預覽聽到的字）、working（整理中，text 是轉寫原稿）、pasted、
 //   command（text 是指令，detail 是做到哪一步）、done、failed（detail 是原因）、nofield、error（text 是原因）、hide。
 // at：游標（拿不到就是視窗）在螢幕上的位置 { x, y, w, h, kind: caret | window }（左上角原點），小框放在它下面；null 就放畫面下方中間
 let bubbleKey = '';
 let lastAnchor = null;
 const bubbleOn = () => config.speed.bubble && (appMode || !!process.env.VOICE_DICTATION_HUD);
-function bubble(state, { text = '', detail = '' } = {}) {
+function bubble(state, { text = '', detail = '', speaker = '' } = {}) {
   if (!bubbleOn()) return;
-  const key = `${state}|${text}|${detail}|${JSON.stringify(lastAnchor)}`;
+  const key = `${state}|${text}|${detail}|${speaker}|${JSON.stringify(lastAnchor)}`;
   if (key === bubbleKey) return;
   bubbleKey = key;
-  emit({ type: 'bubble', state, text, detail, at: lastAnchor });
+  emit({ type: 'bubble', state, text, detail, speaker, at: lastAnchor });
 }
 
 // 讀到上下文就記下游標在哪，小框跟著放
@@ -404,8 +405,10 @@ function takeBatch(chunk) {
     } else {
       stageAudio();
       engine.skip?.();
+      // 小框寫「別人在講話，這句不轉寫」，附上本機預覽聽到的字（看得到擋了什麼）
+      const heard = previews.get(currentTurn) ?? '';
       finishedPreview(currentTurn);
-      showHeard();
+      bubble('ignored', { text: heard });
     }
     turnAudio = [];
     turnAudioBytes = 0;
@@ -419,15 +422,19 @@ let voiceprintKey = '';
 let turnVerdict = null; // 這句在停 0.4 秒時先比的聲紋（只看不記；切句時用同一個聲紋記，不再算一次）
 
 function startVoiceprint() {
-  const { enabled, threshold, minSeconds } = config.voiceprint;
-  const key = enabled ? `${threshold}:${minSeconds}` : '';
+  const { enabled, threshold, minSeconds, shortThreshold } = config.voiceprint;
+  const key = enabled ? `${threshold}:${minSeconds}:${shortThreshold}` : '';
   if (key === voiceprintKey) return;
   voiceprintKey = key;
   voiceprint = enabled ? createVoiceprintFilter({
-    model: join(STATE_DIR, 'models', 'speaker', VOICEPRINT_MODEL), file: VOICEPRINT_FILE, threshold, minSeconds, log,
+    model: join(STATE_DIR, 'models', 'speaker', VOICEPRINT_MODEL), file: VOICEPRINT_FILE, threshold, minSeconds, shortThreshold, log,
   }) : null;
-  if (voiceprint) log(voiceprint.enrolled() ? '只聽你的聲音：開（聲紋已錄好）' : '只聽你的聲音：開，先從你接下來講的話錄聲紋樣本（約 15 秒，照常轉寫）');
+  lastSpeaker = '';
+  if (voiceprint) log(voiceprint.enrolled() ? '只聽你的聲音：開（聲紋已錄好）' : '只聽你的聲音：開，先從你接下來講的話錄聲紋樣本（約 10 秒，照常轉寫）');
 }
+
+// 小框的小標籤寫是誰講的：最後一句比過聲紋的結果（mine 你說的、short 短句、enrolling 正在錄你的聲紋）
+let lastSpeaker = '';
 
 // 這句是不是使用者講的：還在錄樣本、太短、像使用者都放行；不像就不轉寫。v：停 0.4 秒時算好的聲紋
 function judgeTurn(sec, v = null) {
@@ -438,7 +445,8 @@ function judgeTurn(sec, v = null) {
     log(`聲紋樣本錄好了（留下 ${r.kept} 句）：之後不像你的聲音不轉寫`);
     announceSettings();
   } else if (r.verdict === 'other') log(`聲紋不像你（相似度 ${r.score.toFixed(2)}，${sec.toFixed(1)} 秒，${r.ms} ms）：這句不轉寫`);
-  else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '太短不判斷' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
+  else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '短句，用寬的門檻算你' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
+  if (r.pass) lastSpeaker = r.verdict === 'enrolled' ? 'mine' : r.verdict;
   return r;
 }
 
@@ -493,9 +501,10 @@ function showHeard() {
   const text = parts.map(withSpacing).join('').trim();
   if (early && !detector.speaking) bubble('working', { text: early.raw });
   else if (detector.speaking || text) {
-    // 還在錄聲紋樣本：小框多一行說還要講多久
+    // 還在錄聲紋樣本：小框多一行說還要講多久；講話中還不知道是誰，講完比過聲紋才標「你說的」
     const enrolling = voiceprint && !voiceprint.enrolled() ? `建立你的聲紋中，再正常講約 ${Math.ceil(voiceprint.needSeconds())} 秒` : '';
-    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, detail: enrolling });
+    const speaker = !voiceprint || detector.speaking ? '' : !voiceprint.enrolled() ? 'enrolling' : lastSpeaker;
+    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, detail: enrolling, speaker });
   }
   else if (!outputQueue.length && !outputBusy) bubble('hide');
 }
@@ -1140,7 +1149,8 @@ async function tick() {
     try { unlinkSync(VOICEPRINT_RESET); } catch { /* 已經處理 */ }
     if (voiceprint) {
       voiceprint.reset();
-      log('重錄聲紋：從你接下來講的話錄樣本（約 15 秒，照常轉寫）');
+      log('重錄聲紋：從你接下來講的話錄樣本（約 10 秒，照常轉寫）');
+      lastSpeaker = '';
       announceSettings();
     }
   }

@@ -708,7 +708,7 @@ const BUBBLE_PAD_Y = 8;
 const BUBBLE_BAR_W = 3;
 const BUBBLE_MAX_CHARS = 84; // 內文最多三行：一行約 30 個中文字，只留最後這麼多字，最新的字才一定看得到
 // 結果顯示多久就淡出（秒）；聽著、整理中、指令做到一半會一直留著，20 秒沒新消息才收
-const BUBBLE_HOLD = { pasted: 1.4, done: 1.8, nofield: 3, failed: 3.5, error: 4 };
+const BUBBLE_HOLD = { pasted: 1.4, done: 1.8, ignored: 2.5, nofield: 3, failed: 3.5, error: 4 };
 let bubblePanel = null;
 let bubbleTitle = null;
 let bubbleBody = null;
@@ -768,10 +768,12 @@ function bubbleContent(e) {
   const step = e.detail ? `\n${e.detail}` : '';
   switch (e.state) {
     case 'hearing': {
-      // 還在錄聲紋樣本：多一行說還要講多久
+      // 還在錄聲紋樣本：多一行說還要講多久。小標籤寫是誰講的（開了「只聽我的聲音」、這句比過聲紋才有）
       if (!e.text) return e.detail ? [t('聽著…', 'Listening…'), e.detail, blue] : [t('聽著…', 'Listening…'), '', blue];
-      return [t('聽到', 'Hearing'), `${e.text}${step}`, blue];
+      const who = { mine: t('你說的', 'You said'), short: t('你說的（短句）', 'You said (short)'), enrolling: t('聽到（正在錄你的聲紋）', 'Heard (learning your voice)') }[e.speaker];
+      return [who ?? t('聽到', 'Hearing'), `${e.text}${step}`, blue];
     }
+    case 'ignored': return [t('別人在講話，這句不轉寫', 'Someone else is talking; not transcribed'), e.text, orange, true];
     case 'working': return [t('整理中', 'Cleaning up'), e.text, blue];
     case 'pasted': return [t('已貼上', 'Pasted'), '', green];
     case 'command': return [t('語音指令', 'Voice command'), `${e.text}${step}`, blue];

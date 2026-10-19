@@ -3,13 +3,16 @@
 //
 // 10/19 實測（CAM++ zh-cn、使用者自己的錄音 208 段、別人 234 段）：
 //   - 同一支麥克風：自己對樣本 5%～95% 是 0.26～0.78，別人最高 0.27；門檻 0.3 時別人 0%、自己被擋 7.6%。
-//   - 2 秒內的短句不準（門檻 0.3 被擋 29%）：不到 1.5 秒的短句不擋。
+//   - 2 秒內的短句不準（門檻 0.3 被擋 29%）：不到 1.5 秒的短句用寬的門檻 0.1——0.5～1.2 秒的片段，
+//     別人擋下約 8 成、自己被擋 7～11%（樣本 10 秒、跟樣本不同場次的錄音）。
 //   - 換了麥克風，自己只剩 0.2～0.4：樣本要用同一支麥克風錄（Mac 用平常收音的那支，第一次開就從講話裡錄）。
 //   - 旁邊有人講話（別人音量是自己的 1/3～1/2）：門檻 0.3 自己被擋 9～16%。
 
 export const VOICEPRINT_THRESHOLD = 0.3;
-export const VOICEPRINT_MIN_SECONDS = 1.5;
-export const ENROLL_SECONDS = 15; // 錄樣本要收到這麼多秒的講話
+export const VOICEPRINT_MIN_SECONDS = 1.5; // 比這短的句子用 VOICEPRINT_SHORT_THRESHOLD
+export const VOICEPRINT_SHORT_THRESHOLD = 0.1;
+// 錄樣本要收到這麼多秒的講話：實測 3 秒自己被擋 19%、5～10 秒約 1 成、10 秒以上沒有再變好
+export const ENROLL_SECONDS = 10;
 const ENROLL_MIN_TURN = 1; // 錄樣本只收 1 秒以上的句子
 const ENROLL_CLUSTER = 0.45; // 錄樣本時，跟大多數句子像到這個程度才算同一個人（混進來的別人剔除）
 const ADAPT_MIN = 0.5; // 很確定是自己（而且 2 秒以上）的句子加進「最近的聲音」，聲音隨環境、時間變也跟得上
@@ -52,7 +55,7 @@ export function pickEnrollment(items) {
 }
 
 // state：{ enrolled: [聲紋], recent: [聲紋], pending: [{ v, sec }] }（存檔用，聲紋是一般陣列）
-export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD, minSeconds = VOICEPRINT_MIN_SECONDS } = {}) {
+export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD, minSeconds = VOICEPRINT_MIN_SECONDS, shortThreshold = VOICEPRINT_SHORT_THRESHOLD } = {}) {
   let enrolled = state.enrolled ?? [];
   let recent = state.recent ?? [];
   let pending = state.pending ?? [];
@@ -68,13 +71,13 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
     // 還要錄幾秒樣本
     needSeconds: () => (enrolled.length ? 0 : Math.max(0, ENROLL_SECONDS - pendingSeconds())),
     // 一句講完：v 是這句的聲紋（正規化過），sec 是秒數。回傳 { pass, verdict, score }
-    //   verdict：enrolling（還在錄樣本，照常轉寫）、enrolled（這句湊滿樣本）、short（太短不判斷）、mine、other
+    //   verdict：enrolling（還在錄樣本，照常轉寫）、enrolled（這句湊滿樣本）、short（短句，用寬的門檻放行）、mine、other
     // dryRun：只看不記（講到一半停頓時先比一下，不把半句算進樣本、不加進最近的聲音）
     judge(v, sec, { dryRun = false } = {}) {
       if (dryRun) {
         if (!enrolled.length) return { pass: true, verdict: 'enrolling', score: null };
         const score = cosine(v, ref);
-        if (sec < minSeconds) return { pass: true, verdict: 'short', score };
+        if (sec < minSeconds) return { pass: score >= shortThreshold, verdict: score >= shortThreshold ? 'short' : 'other', score };
         return { pass: score >= threshold, verdict: score >= threshold ? 'mine' : 'other', score };
       }
       if (!enrolled.length) {
@@ -92,7 +95,7 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
         return { pass: true, verdict: 'enrolling', score: null };
       }
       const score = cosine(v, ref);
-      if (sec < minSeconds) return { pass: true, verdict: 'short', score };
+      if (sec < minSeconds) return { pass: score >= shortThreshold, verdict: score >= shortThreshold ? 'short' : 'other', score };
       if (score < threshold) return { pass: false, verdict: 'other', score };
       if (score >= ADAPT_MIN && sec >= ADAPT_SECONDS) {
         recent = [...recent, Array.from(v)].slice(-ADAPT_KEEP);

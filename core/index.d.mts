@@ -199,12 +199,13 @@ export const CORE_VERSION: string;
 /** 聲紋過濾：聲紋（正規化過的 embedding）由呼叫端算，這裡判斷是不是使用者 */
 export const VOICEPRINT_THRESHOLD: number;
 export const VOICEPRINT_MIN_SECONDS: number;
+export const VOICEPRINT_SHORT_THRESHOLD: number;
 export const ENROLL_SECONDS: number;
 export interface VoiceprintVerdict { pass: boolean; verdict: 'enrolling' | 'enrolled' | 'short' | 'mine' | 'other'; score: number | null; kept?: number }
-export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[] }; threshold?: number; minSeconds?: number }): {
+export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[] }; threshold?: number; minSeconds?: number; shortThreshold?: number }): {
   enrolled(): boolean;
   needSeconds(): number;
-  judge(v: ArrayLike<number>, sec: number): VoiceprintVerdict;
+  judge(v: ArrayLike<number>, sec: number, opts?: { dryRun?: boolean }): VoiceprintVerdict;
   reset(): void;
   state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] };
 };

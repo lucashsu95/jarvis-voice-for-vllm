@@ -9,7 +9,7 @@ import { createVoiceprint, normalize } from '../core/voiceprint.mjs';
 const require = createRequire(import.meta.url);
 export const VOICEPRINT_MODEL = 'campplus_zh.onnx';
 
-export function createVoiceprintFilter({ model, file, threshold, minSeconds, log = () => {} }) {
+export function createVoiceprintFilter({ model, file, threshold, minSeconds, shortThreshold, log = () => {} }) {
   let extractor = null;
   let sherpa = null;
   try {
@@ -26,7 +26,7 @@ export function createVoiceprintFilter({ model, file, threshold, minSeconds, log
   const resampler = new sherpa.LinearResampler(24000, 16000);
   let saved = {};
   try { if (existsSync(file)) saved = JSON.parse(readFileSync(file, 'utf8')); } catch { /* 壞檔就重錄 */ }
-  const vp = createVoiceprint({ state: saved.model === VOICEPRINT_MODEL ? saved : {}, threshold, minSeconds });
+  const vp = createVoiceprint({ state: saved.model === VOICEPRINT_MODEL ? saved : {}, threshold, minSeconds, shortThreshold });
 
   const save = () => {
     try {

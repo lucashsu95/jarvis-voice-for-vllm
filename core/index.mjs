@@ -19,6 +19,6 @@ export { isSpeech, onlyFiller, withSpacing } from './text.mjs';
 export { readingOrder, ocrText, joinScreen } from './ocr.mjs';
 export { PROVIDERS, DEFAULT_MODELS, PROVIDER_NAMES, DEFAULT_URLS, ownKeyService } from './providers.mjs';
 export { hedge } from './hedge.mjs';
-export { createVoiceprint, pickEnrollment, cosine, normalize, meanVector, VOICEPRINT_THRESHOLD, VOICEPRINT_MIN_SECONDS, ENROLL_SECONDS } from './voiceprint.mjs';
+export { createVoiceprint, pickEnrollment, cosine, normalize, meanVector, VOICEPRINT_THRESHOLD, VOICEPRINT_MIN_SECONDS, VOICEPRINT_SHORT_THRESHOLD, ENROLL_SECONDS } from './voiceprint.mjs';
 
 export const CORE_VERSION = '1.0.0';
