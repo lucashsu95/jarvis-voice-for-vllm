@@ -225,7 +225,7 @@ function scorer(vp, voice) {
   return (s) => core.normalize(ref.map((x, i) => s * x + Math.sqrt(1 - s * s) * orth[i]));
 }
 
-test('門檻：打底 0.3／0.4；同一場放行的長句滿 3 句後＝最近 5 句中位數 − 0.45（最高 0.5），短句跟著；10 分鐘沒講回到打底', () => {
+test('門檻：打底 0.3／0.4；同一場很確定是你的長句（0.5 以上）滿 3 句後＝最近 5 句中位數 − 0.45（最高 0.5），短句跟著；10 分鐘沒講回到打底', () => {
   assert.equal(core.VOICEPRINT_THRESHOLD, 0.3);
   assert.equal(core.VOICEPRINT_SHORT_THRESHOLD, 0.4);
   let t = 0;
@@ -246,9 +246,11 @@ test('門檻：打底 0.3／0.4；同一場放行的長句滿 3 句後＝最近 
   assert.equal(vp.judge(at(0.42), 3, { dryRun: true }).pass, false, '旁人 0.42 長句：擋');
   assert.equal(vp.judge(at(0.42), 1, { dryRun: true }).pass, false, '旁人 0.42 短句：擋');
   assert.equal(vp.judge(at(0.5), 1, { dryRun: true }).pass, true);
-  // 不像的句子不記進這一場
+  // 不像的句子、漏網的旁人（放行但不到 0.5）都不記進這一場，門檻不會被往下拉
   vp.judge(at(0.1), 3);
+  vp.judge(at(0.47), 1.8);
   assert.equal(vp.state().session.length, 3);
+  assert.ok(Math.abs(vp.threshold() - 0.45) < 1e-9);
   // 存檔讀回一樣
   const again = core.createVoiceprint({ state: JSON.parse(JSON.stringify(vp.state())), now: () => t });
   assert.equal(again.threshold(), vp.threshold());

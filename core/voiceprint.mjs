@@ -12,11 +12,12 @@
 // 計劃：CubeLV cubelv_docs/計劃/2026-10-19_只聽我的聲音_後端聲紋.md
 //
 // 門檻長句 0.3、短句 0.4 打底，同一場講話裡跟著你的分數往上提（10/19，CubeLV cubelv_docs 計劃/2026-10-19_聲紋門檻依個人自動調.md）：
-//   - 同一場（10 分鐘內）放行的長句滿 3 句後，門檻＝最近 5 句分數的中位數 − 0.45，夾在 [0.3, 0.5]；短句門檻＝max(0.4, 這個門檻)。
+//   - 同一場（10 分鐘內）很確定是你的長句（0.5 以上）滿 3 句後，門檻＝最近 5 句分數的中位數 − 0.45，夾在 [0.3, 0.5]；短句門檻＝max(0.4, 這個門檻)。
+//     漏網的旁人（0.3～0.47）不記：箱子手機實測背景有人講話時你的分數掉到 0.74，漏網的 fangjun 0.36 一記進來門檻就一路往下掉。
 //     換了地方、隔了一陣子再講，頭幾句照樣用 0.3，換環境分數整段掉下來也不會被卡住。
 //   - 為什麼：同一場裡你的分數很穩（Mac 10/19 下午真的有字的長句 0.65～0.90、短句 0.58～0.79），聲音像你的旁人在 0.3～0.47，
 //     固定 0.3 擋不住；門檻跟著你這場的分數走就擋得住。
-//   - Mac 10/19 下午實際紀錄：放行的長句裡 0.32～0.40 那幾句、短句 0.40～0.50 那幾句轉出來都是空的（爆音、雜音），照這條會改成擋掉；有字的句子一句都不會多擋。
+//   - Mac 10/19 下午實際紀錄：放行的長句裡 0.32～0.40、短句 0.40～0.50 那幾句轉出來都是空的（爆音、雜音）。照這條重算，多擋的只有一句 0.32 的空句，有字的句子一句都不會多擋。
 //   - 箱子模擬（Mac 那批 10 段錄音，有內容的本人句子）：本人被擋不變（長句 2.8%，被擋的是很小聲含糊、夾店員聲音那幾句），
 //     雷軍講話中穿插劉德華、fangjun（同一批錄音條件、聲音像）通過 38.5% → 7.7%。
 //   - 10/19 也試過：放寬到 0.2／0.05（同場旁人大多會過）、依個人往上調（比對群、跨場次的分數，換場次本人被擋變多），都不採用。
@@ -31,7 +32,7 @@ const ENROLL_CLUSTER = 0.45; // 錄樣本時，跟大多數句子像到這個程
 const ADAPT_MIN = 0.5; // 很確定是自己（而且 2 秒以上）的句子加進「最近的聲音」，聲音隨環境、時間變也跟得上
 const ADAPT_SECONDS = 2;
 const ADAPT_KEEP = 10;
-const SESSION_MS = 10 * 60 * 1000; // 同一場：最近 10 分鐘內放行的長句
+const SESSION_MS = 10 * 60 * 1000; // 同一場：最近 10 分鐘內很確定是你的長句（ADAPT_MIN 以上）
 const SESSION_MIN = 3; // 滿這麼多句才跟著這場的分數走
 const SESSION_KEEP = 5; // 看最近這麼多句的中位數
 const SESSION_DELTA = 0.45; // 門檻＝中位數減這麼多
@@ -89,7 +90,7 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
   let pending = state.pending ?? [];
   let session = state.session ?? [];
   let ref = null;
-  // 這一場的長句門檻：10 分鐘內放行的長句滿 3 句，最近 5 句的中位數 − 0.45，夾在 [threshold, 0.5]
+  // 這一場的長句門檻：10 分鐘內很確定是你的長句滿 3 句，最近 5 句的中位數 − 0.45，夾在 [threshold, 0.5]
   const current = () => {
     const t = now();
     const scores = session.filter((x) => t - x.at <= SESSION_MS).slice(-SESSION_KEEP).map((x) => x.score).sort((a, b) => a - b);
@@ -135,8 +136,8 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
       const score = cosine(v, ref);
       if (sec < minSeconds) { const th = currentShort(); return { pass: score >= th, verdict: score >= th ? 'short' : 'other', score }; }
       if (score < current()) return { pass: false, verdict: 'other', score };
-      // 這一場：放行的長句分數記下來，門檻跟著走
-      session = [...session.filter((x) => now() - x.at <= SESSION_MS), { at: now(), score: Math.round(score * 1e4) / 1e4 }].slice(-SESSION_KEEP);
+      // 這一場：很確定是你的長句（0.5 以上）分數記下來，門檻跟著走。漏網的旁人（0.3～0.47）不記，不會把門檻往下拉
+      if (score >= ADAPT_MIN) session = [...session.filter((x) => now() - x.at <= SESSION_MS), { at: now(), score: Math.round(score * 1e4) / 1e4 }].slice(-SESSION_KEEP);
       // 越用越準：很確定是自己的句子（2 秒以上、0.5 以上）加進「最近的聲音」。只收 0.5 以上：漏網的旁人（多在 0.3～0.46）不會混進來。
       if (score >= ADAPT_MIN && sec >= ADAPT_SECONDS) {
         recent = [...recent, Array.from(v)].slice(-ADAPT_KEEP);
