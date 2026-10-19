@@ -146,7 +146,7 @@ test('同步腳本：複製核心並在每個檔案寫上來源 commit', async (
   assert.equal(typeof synced.editSegment, 'function');
 });
 
-test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的放行、不像的擋；短句用寬的門檻；很確定的句子加進最近的聲音', () => {
+test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的放行、不像的擋；短句另外用短句的門檻；很確定的句子加進最近的聲音', () => {
   // 假的聲紋：使用者在 x 軸附近，別人在 y 軸附近（8 維，加一點雜訊）
   let seed = 7;
   const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
@@ -168,7 +168,7 @@ test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的�
   const other = vp.judge(voice(1), 3);
   assert.equal(other.pass, false);
   assert.ok(other.score < core.VOICEPRINT_THRESHOLD);
-  // 短句：像的放行（寬的門檻），完全不像的也擋
+  // 短句：像的放行，不像的擋（短句的門檻）
   assert.equal(vp.judge(voice(0), 1).verdict, 'short');
   const shortOther = vp.judge(voice(1), 1);
   assert.equal(shortOther.pass, false);
