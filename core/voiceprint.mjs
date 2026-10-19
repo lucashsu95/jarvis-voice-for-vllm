@@ -7,6 +7,10 @@
 //     別人擋下約 8 成、自己被擋 7～11%（樣本 10 秒、跟樣本不同場次的錄音）。
 //   - 換了麥克風，自己只剩 0.2～0.4：樣本要用同一支麥克風錄（Mac 用平常收音的那支，第一次開就從講話裡錄）。
 //   - 旁邊有人講話（別人音量是自己的 1/3～1/2）：門檻 0.3 自己被擋 9～16%。
+//
+// 手機不裝模型（CubeLV、平行沙盒）：聲紋由轉寫的後端算（同一個 CAM++ 模型），規則照樣在這裡、跑在前端——
+// 前端把 gate()（參考聲紋＋門檻）交給後端，後端每句照 passesGate 擋；每句的聲紋送回前端，由 createRemoteVoiceprint 記樣本、越用越準。
+// 計劃：CubeLV cubelv_docs/計劃/2026-10-19_只聽我的聲音_後端聲紋.md
 
 export const VOICEPRINT_THRESHOLD = 0.3;
 export const VOICEPRINT_MIN_SECONDS = 1.5; // 比這短的句子用 VOICEPRINT_SHORT_THRESHOLD
@@ -18,6 +22,8 @@ const ENROLL_CLUSTER = 0.45; // 錄樣本時，跟大多數句子像到這個程
 const ADAPT_MIN = 0.5; // 很確定是自己（而且 2 秒以上）的句子加進「最近的聲音」，聲音隨環境、時間變也跟得上
 const ADAPT_SECONDS = 2;
 const ADAPT_KEEP = 10;
+// 後端算聲紋用的模型（sherpa-onnx 3dspeaker_speech_campplus_sv_zh-cn_16k-common）：存檔記著，換了模型就重錄
+export const REMOTE_VOICEPRINT_MODEL = 'campplus-zh-cn-16k-common';
 
 export function normalize(v) {
   let n = 0;
@@ -52,6 +58,13 @@ export function pickEnrollment(items) {
   const near = items.filter((x) => x === best || cosine(x.v, best.v) >= ENROLL_CLUSTER);
   const center = meanVector(near);
   return items.filter((x) => cosine(x.v, center) >= ENROLL_CLUSTER);
+}
+
+// 後端照這條擋（CubeLV ai_prompt、平行沙盒 control 各寫一份同樣的判斷）：沒有擋法（還在錄樣本）、算不出聲紋都放行；
+// 短句用短句的門檻。跟 judge() 的放不放行一樣。
+export function passesGate(gate, score, sec) {
+  if (!gate || score === null || score === undefined) return true;
+  return score >= (sec < gate.minSeconds ? gate.shortThreshold : gate.threshold);
 }
 
 // state：{ enrolled: [聲紋], recent: [聲紋], pending: [{ v, sec }] }（存檔用，聲紋是一般陣列）
@@ -103,6 +116,8 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
       }
       return { pass: true, verdict: 'mine', score };
     },
+    // 給後端的擋法：參考聲紋（樣本＋最近的聲音的平均）與門檻；還在錄樣本是 null。參考聲紋變了才會換成新的陣列
+    gate: () => (enrolled.length ? { reference: ref, threshold, shortThreshold, minSeconds } : null),
     reset() {
       enrolled = [];
       recent = [];
@@ -110,5 +125,59 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
       ref = null;
     },
     state: () => ({ enrolled, recent, pending }),
+  };
+}
+
+// createRemoteVoiceprint —— 前端用（手機不裝模型）：聲紋由轉寫的後端每句算好送回來（voiceprint.turn），這裡記樣本、越用越準、存檔。
+//   store：{ load() → 存過的（沒有是 null）, save(存檔), clear() }。存哪由各 app 決定（CubeLV：裝置本機，每個帳號、每支麥克風一份）。
+//   onChange({ enrolled, needSeconds, pass, verdict, score })：每句判斷完（畫面顯示還要講幾秒、略過了幾句）。
+// 回傳的 transcription 交給 createSpeechTranscription／createTranscriber 的 voiceprint 選項。
+export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) {
+  let saved = null;
+  try { saved = store.load(); } catch { /* 讀不到就重錄 */ }
+  const vp = createVoiceprint({ ...opts, state: saved?.model === REMOTE_VOICEPRINT_MODEL ? saved : {} });
+  const round = (v) => v.map((x) => Math.round(x * 1e4) / 1e4);
+  const save = () => {
+    const s = vp.state();
+    try {
+      store.save({
+        model: REMOTE_VOICEPRINT_MODEL, at: Date.now(),
+        enrolled: s.enrolled.map(round), recent: s.recent.map(round), pending: s.pending.map((x) => ({ v: round(x.v), sec: x.sec })),
+      });
+    } catch { /* 存不進去：下次重錄 */ }
+  };
+  const clear = () => {
+    vp.reset();
+    try { store.clear(); } catch { /* 本來就沒有 */ }
+  };
+  return {
+    enrolled: () => vp.enrolled(),
+    needSeconds: () => vp.needSeconds(),
+    // 重錄：刪掉存的聲紋，從接下來講的話重新錄（正在轉寫的話，呼叫端再叫 updateVoiceprint() 把新的擋法送給後端）
+    reset: clear,
+    transcription: {
+      config: () => vp.gate(),
+      // 後端用的模型跟存檔的不一樣：存的聲紋比不了，重錄。回傳 true＝擋法變了，核心再送一次設定
+      onReady(info) {
+        if (!info?.model || info.model === REMOTE_VOICEPRINT_MODEL || !vp.enrolled()) return false;
+        clear();
+        return true;
+      },
+      // 一句的結果（後端放行或擋掉都會來）：有聲紋就記進樣本／最近的聲音。回傳 true＝擋法變了（剛錄好、最近的聲音更新）
+      onTurn(event) {
+        const pass = event.pass !== false;
+        if (!event.embedding?.length) {
+          onChange({ enrolled: vp.enrolled(), needSeconds: vp.needSeconds(), pass, verdict: pass ? 'short' : 'other', score: event.score ?? null });
+          return false;
+        }
+        const wasEnrolled = vp.enrolled();
+        const before = vp.gate()?.reference;
+        const r = vp.judge(normalize(event.embedding), event.seconds ?? 0);
+        const changed = vp.gate()?.reference !== before;
+        if (!wasEnrolled || changed) save();
+        onChange({ enrolled: vp.enrolled(), needSeconds: vp.needSeconds(), pass, verdict: pass ? r.verdict : 'other', score: event.score ?? r.score });
+        return changed;
+      },
+    },
   };
 }

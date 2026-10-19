@@ -120,6 +120,17 @@ export interface TranscriberOptions {
   maxReconnects?: number;
   retryBaseMs?: number;
   openTimeoutMs?: number;
+  /** 只聽使用者的聲音：後端算聲紋、照這份擋（createRemoteVoiceprint().transcription） */
+  voiceprint?: TranscriptionVoiceprint | null;
+}
+/** 後端每句回來的聲紋結果 */
+export interface VoiceprintTurnEvent { type: 'voiceprint.turn'; commit_event_id: string; pass: boolean; score: number | null; seconds: number; embedding: number[] | null; ms?: number }
+export interface TranscriptionVoiceprint {
+  config(): VoiceprintGate | null;
+  /** 後端回 voiceprint.ready（帶模型名稱）；回傳 true＝擋法變了，再送一次 */
+  onReady?(info: { model?: string }): boolean;
+  /** 每句的結果；回傳 true＝擋法變了，再送一次 */
+  onTurn?(event: VoiceprintTurnEvent): boolean;
 }
 export interface Transcriber {
   append(bytes: Uint8Array): void;
@@ -127,6 +138,8 @@ export interface Transcriber {
   flush(): void;
   pending(): number;
   lastSequence(): number;
+  /** 擋法變了（重錄、開關）：連著的話馬上送新的設定給後端 */
+  updateVoiceprint(): void;
   busy(): boolean;
   readonly failed: Error | null;
   transcript(): string;
@@ -142,6 +155,7 @@ export function createTranscriber(options: TranscriberOptions): Transcriber;
 export interface SpeechTranscription {
   push(samples: Int16Array, at?: { startSample?: number; at?: number }): void;
   cut(): void;
+  updateVoiceprint(): void;
   readonly speaking: boolean;
   readonly capturedUntilMs: number;
   readonly failed: Error | null;
@@ -201,11 +215,23 @@ export const VOICEPRINT_THRESHOLD: number;
 export const VOICEPRINT_MIN_SECONDS: number;
 export const VOICEPRINT_SHORT_THRESHOLD: number;
 export const ENROLL_SECONDS: number;
+export const REMOTE_VOICEPRINT_MODEL: string;
+/** 給後端的擋法：參考聲紋與門檻（短於 minSeconds 用 shortThreshold） */
+export interface VoiceprintGate { reference: number[]; threshold: number; shortThreshold: number; minSeconds: number }
+export function passesGate(gate: VoiceprintGate | null, score: number | null | undefined, sec: number): boolean;
+export interface VoiceprintSaved { model: string; at: number; enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] }
+export interface VoiceprintChange { enrolled: boolean; needSeconds: number; pass: boolean; verdict: VoiceprintVerdict['verdict']; score: number | null }
+export function createRemoteVoiceprint(opts: {
+  store: { load(): VoiceprintSaved | null; save(saved: VoiceprintSaved): void; clear(): void };
+  onChange?: (change: VoiceprintChange) => void;
+  threshold?: number; minSeconds?: number; shortThreshold?: number;
+}): { enrolled(): boolean; needSeconds(): number; reset(): void; transcription: TranscriptionVoiceprint };
 export interface VoiceprintVerdict { pass: boolean; verdict: 'enrolling' | 'enrolled' | 'short' | 'mine' | 'other'; score: number | null; kept?: number }
 export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[] }; threshold?: number; minSeconds?: number; shortThreshold?: number }): {
   enrolled(): boolean;
   needSeconds(): number;
   judge(v: ArrayLike<number>, sec: number, opts?: { dryRun?: boolean }): VoiceprintVerdict;
+  gate(): VoiceprintGate | null;
   reset(): void;
   state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] };
 };

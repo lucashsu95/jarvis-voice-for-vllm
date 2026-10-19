@@ -5,6 +5,9 @@
 //   - 連線斷了或 OpenAI 回錯（手機換網路、連線滿 10 分鐘被關掉）：重開連線，把還沒拿到逐字稿的聲音與斷句照原順序重送；
 //     連續失敗 maxReconnects 次才放棄（onError 一次），不讓一次失誤把整段錄音判死。
 //   - 每句逐字稿照講的順序排，帶這句講話的起訖時間（onItem）。
+//   - 只聽使用者的聲音（voiceprint 選項，手機不裝模型）：開線先送 voiceprint.config（參考聲紋與門檻，還在錄樣本是 null），
+//     每句 commit 前送 voiceprint.turn_info（這句講了幾秒）；後端算聲紋，不像就整句不送 OpenAI，回 voiceprint.turn。
+//     舊後端不認這些事件（OpenAI 回錯，帶 voiceprint_ 開頭的 event_id）：記成不支援、不重連，照常轉寫。
 // 只用 WebSocket、setTimeout、btoa、crypto.randomUUID：瀏覽器和 Node 都有，不用 node: 模組。
 
 import { TurnSplitter } from './turns.mjs';
@@ -39,6 +42,8 @@ export function permanentError(message) {
 //   discard(序號)：這句作廢（停一下先送、之後又開口，整句會重送）：它的字不算進全文，也不用等它回來。
 //   startHint()：commit 前就先出字時，這句從哪裡開始；elapsed()：現在是錄音開始後幾 ms（沒有起點的字用）。
 //   lazy：有東西要送才連線（Mac 小程式）；不給就馬上連（按下錄音的輸入框）。
+//   voiceprint：{ config() → 擋法或 null, onReady(info) → 擋法變了?, onTurn(event) → 擋法變了? }（core/voiceprint.mjs 的
+//     createRemoteVoiceprint().transcription）。後端擋掉的句子當成沒有字（不等字、不重送）。updateVoiceprint()：擋法變了再送一次。
 export function createTranscriber({
   connect,
   onItem,
@@ -54,6 +59,7 @@ export function createTranscriber({
   maxReconnects = MAX_RECONNECTS,
   retryBaseMs = 500,
   openTimeoutMs = OPEN_TIMEOUT_MS,
+  voiceprint = null,
 }) {
   const parts = new Map(); // item id → { draft, final, startMs, endMs }
   const order = [];
@@ -81,6 +87,8 @@ export function createTranscriber({
   let finishResolve = null;
   let finishReject = null;
   let openWaiters = [];
+  let voiceprintState = 'unknown'; // unknown（還沒回）、ready（後端會擋）、unsupported（舊後端）
+  const voiceprintSeen = new Set(); // 已經交給 onTurn 的句子（斷線重送同一句不記兩次樣本）
   const socketState = () => `ws=${ws?.readyState ?? 'none'}`;
   const note = (message) => {
     const extra = describe();
@@ -166,6 +174,21 @@ export function createTranscriber({
     outgoing.push({ kind: 'audio', bytes: merged });
   };
 
+  const voiceprintOn = () => !!voiceprint && voiceprintState !== 'unsupported';
+  const voiceprintEventId = () => `voiceprint_${crypto.randomUUID()}`;
+  const sendVoiceprintConfig = (socket = ws) => {
+    if (!voiceprintOn() || !socket || socket.readyState !== 1) return;
+    const gate = voiceprint.config();
+    socket.send(JSON.stringify({
+      type: 'voiceprint.config',
+      event_id: voiceprintEventId(),
+      reference: gate?.reference ?? null,
+      threshold: gate?.threshold ?? null,
+      short_threshold: gate?.shortThreshold ?? null,
+      min_seconds: gate?.minSeconds ?? null,
+    }));
+  };
+
   const flush = () => {
     stageAudio();
     if (!ws || !wsOpen || ws.readyState !== 1) {
@@ -177,7 +200,14 @@ export function createTranscriber({
         ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: base64FromBytes(op.bytes) }));
       } else {
         commitsWaitingForIds.push(op.turn);
-        ws.send(JSON.stringify({ type: 'input_audio_buffer.commit', event_id: `commit_${crypto.randomUUID()}` }));
+        // 這句講了幾秒（後端算聲紋時，短句用短句的門檻；後端自己只看得到含句首句尾靜音的長度）
+        if (voiceprintOn() && Number.isFinite(op.turn.startMs) && Number.isFinite(op.turn.endMs)) {
+          ws.send(JSON.stringify({
+            type: 'voiceprint.turn_info', event_id: voiceprintEventId(), commit_event_id: op.turn.eventId,
+            seconds: Math.max(0, op.turn.endMs - op.turn.startMs) / 1000,
+          }));
+        }
+        ws.send(JSON.stringify({ type: 'input_audio_buffer.commit', event_id: op.turn.eventId }));
       }
       sent.push(op);
     }
@@ -198,6 +228,36 @@ export function createTranscriber({
   const onMessage = (raw) => {
     let event;
     try { event = JSON.parse(typeof raw === 'string' ? raw : String(raw)); } catch { return; }
+    if (event.type === 'voiceprint.ready') {
+      voiceprintState = 'ready';
+      if (voiceprint?.onReady?.(event)) sendVoiceprintConfig();
+      return;
+    }
+    if (event.type === 'voiceprint.turn') {
+      const id = event.commit_event_id;
+      if (id && !voiceprintSeen.has(id)) {
+        voiceprintSeen.add(id);
+        if (voiceprint?.onTurn?.(event)) sendVoiceprintConfig();
+      }
+      // 後端擋掉了：這句不會有 committed、也不會有字，從等字的清單拿掉（其他句子照順序等）
+      if (event.pass === false) {
+        const index = commitsWaitingForIds.findIndex((turn) => turn.eventId === id);
+        if (index >= 0) {
+          const [turn] = commitsWaitingForIds.splice(index, 1);
+          note(`voiceprint skipped turn ${turn.sequence} score=${event.score ?? '-'}`);
+          // 斷線時不用重送這句：只拿掉這句自己的聲音與 commit（前面還在等字的句子照樣留著補送）
+          const at = sent.findIndex((op) => op.kind === 'commit' && op.turn.sequence === turn.sequence);
+          if (at >= 0) {
+            let from = at;
+            while (from > 0 && sent[from - 1].kind === 'audio') from -= 1;
+            sent.splice(from, at - from + 1);
+          }
+          settleTurn(turn.sequence, false);
+        }
+        maybeResolveFinish();
+      }
+      return;
+    }
     if (event.type === 'input_audio_buffer.committed') {
       const turn = commitsWaitingForIds.shift();
       if (event.item_id && turn) {
@@ -237,6 +297,12 @@ export function createTranscriber({
       return;
     }
     if (event.type === 'error') {
+      // 舊後端把聲紋的事件轉給了 OpenAI：不支援，之後不送，照常轉寫（不用重連）
+      if (String(event.error?.event_id ?? '').startsWith('voiceprint_')) {
+        if (voiceprintState !== 'unsupported') note('voiceprint not supported by this server');
+        if (voiceprintState !== 'ready') voiceprintState = 'unsupported';
+        return;
+      }
       // 斷句時這條連線裡沒有聲音：沒有東西可轉，這次斷句就算完成
       if (event.error?.code === 'input_audio_buffer_commit_empty') {
         const turn = commitsWaitingForIds.shift();
@@ -269,6 +335,8 @@ export function createTranscriber({
       socket.onopen = () => {
         if (ws !== socket) return;
         if (sessionUpdate) socket.send(JSON.stringify(sessionUpdate));
+        // 聲紋的擋法要在聲音之前到（後端從第一句就照它擋）
+        sendVoiceprintConfig(socket);
         wsOpen = true;
         connectedAt = Date.now();
         flush();
@@ -343,7 +411,8 @@ export function createTranscriber({
       stageAudio();
       const sequence = ++turnSequence;
       pendingTurns.add(sequence);
-      outgoing.push({ kind: 'commit', turn: { ...turn, sequence } });
+      // event_id 這時就定好：斷線重送沿用同一個，後端回的 voiceprint.turn 對得回這句
+      outgoing.push({ kind: 'commit', turn: { ...turn, sequence, eventId: `commit_${crypto.randomUUID()}` } });
       flush();
       onPending?.();
       return sequence;
@@ -368,6 +437,8 @@ export function createTranscriber({
     // 送出去、還在等字的句子數
     pending: () => pendingTurns.size,
     lastSequence: () => turnSequence,
+    // 擋法變了（重錄、關掉再開）：連著的話馬上送新的設定給後端
+    updateVoiceprint: () => sendVoiceprintConfig(),
     busy: () => !nothingPending() || connecting,
     get failed() { return fatalError; },
     transcript: () => transcript(),
@@ -513,6 +584,7 @@ export function createSpeechTranscription({ recordingStartedAt, onActivity, earl
       updateActivity();
     },
     cut,
+    updateVoiceprint: () => transcriber.updateVoiceprint(),
     get speaking() { return splitter.speaking; },
     get capturedUntilMs() { return capturedUntilMs; },
     get failed() { return transcriber.failed; },
