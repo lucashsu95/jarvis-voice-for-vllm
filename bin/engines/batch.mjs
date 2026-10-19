@@ -153,6 +153,8 @@ export function createBatchEngine({ apiKey, model = 'gpt-transcribe', languages 
     flush() {},
     busy: () => inflight > 0 || results.size > 0,
     housekeeping() {},
+    // 這句不要（聲紋不像使用者）：不送轉寫，先送的那份也作廢
+    skip() { chunks = []; bytes = 0; dropEarly(); },
     close() { closed = true; chunks = []; bytes = 0; dropEarly(); },
   };
 }

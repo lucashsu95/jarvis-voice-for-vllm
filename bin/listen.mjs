@@ -37,6 +37,7 @@ import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment } from './editor.mjs';
 import { DEFAULT_URLS } from '../core/providers.mjs';
 import { createBatchEngine } from './engines/batch.mjs';
 import { createLocalEngine, createPreviewer } from './engines/local.mjs';
+import { VOICEPRINT_MODEL, createVoiceprintFilter } from './voiceprint.mjs';
 import { createRealtimeEngine, cubelvConnector, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
 import { appendHistory } from './history.mjs';
 import { createDecider, describeElement, fieldQuestions, inFieldIntentQuestion, inFieldVerdict, intentQuestion, referenceQuestion } from './decide.mjs';
@@ -48,6 +49,8 @@ import { finishText, isSpeech, withSpacing } from './text.mjs';
 const LOCK = join(STATE_DIR, 'listener.lock');
 const PAUSED = join(STATE_DIR, 'paused');
 const REVERT = join(STATE_DIR, 'revert-request');
+const VOICEPRINT_FILE = join(STATE_DIR, 'voiceprint.json');
+const VOICEPRINT_RESET = join(STATE_DIR, 'voiceprint-reset'); // 選單「重錄我的聲紋」
 const STATUS = join(STATE_DIR, 'status.json');
 const LAST = join(STATE_DIR, 'last.txt');
 const LOG = join(STATE_DIR, 'listen.log');
@@ -176,6 +179,7 @@ function announceSettings() {
     commands: config.commands,
     decider: deciderName,
     cubelv: { loggedIn: !!account, email: account?.email ?? '' },
+    voiceprint: { enabled: !!config.voiceprint.enabled, ready: !!voiceprint, enrolled: !!voiceprint?.enrolled() },
     // 各家有沒有 key（哪裡設的都算）：選單選了沒有 key 的那家，直接開「設定自己的 key…」的對話框
     keys: { openai: !!aiKey(config, 'openai'), deepseek: !!aiKey(config, 'deepseek'), claude: !!aiKey(config, 'claude'), jev: !!config.jev.apiKey },
   });
@@ -230,6 +234,7 @@ function startEngine() {
     previewer = createPreviewer({ model: config.local.model, log });
   }
   log(`轉寫引擎：${config.engine}${config.engine === 'openai' ? `（${config.openai.model}，詞彙 ${config.openai.keywords.length} 個）` : ''}`);
+  startVoiceprint();
   if (configError) setError(configError);
   announceSettings();
 }
@@ -377,16 +382,64 @@ function takeBatch(chunk) {
     warmUp();
     schedulePreview();
   }
-  // 停了 0.4 秒：先把到這裡的聲音送去轉寫；又開口就作廢
-  if (tentative && engine.speculate) { stageAudio(); engine.speculate(); }
-  if (resumed && engine.discard?.()) log('停 0.4 秒先送的轉寫作廢：又開口了');
+  // 停了 0.4 秒：先比聲紋（不像使用者就不送），再把到這裡的聲音送去轉寫；又開口就作廢
+  if (tentative && engine.speculate) {
+    turnVerdict = voiceprint ? voiceprint.check(Buffer.concat(turnAudio, turnAudioBytes), (detector.lastVoiceEnd - detector.currentStartMs) / 1000, { dryRun: true }) : null;
+    if (!turnVerdict || turnVerdict.pass) { stageAudio(); engine.speculate(); }
+  }
+  if (resumed) {
+    turnVerdict = null;
+    if (engine.discard?.()) log('停 0.4 秒先送的轉寫作廢：又開口了');
+  }
   if (turn) {
-    log(`切出一句 ${((turn.endMs - turn.startMs) / 1000).toFixed(1)} 秒（最大音量 ${turnPeak.toFixed(3)}${turnPeak >= 0.99 ? '，爆音' : ''}），送去轉寫`);
+    const sec = (turn.endMs - turn.startMs) / 1000;
+    // 停 0.4 秒時已經算過這句的聲紋（之後沒再開口，聲音一樣）：直接記，不再算一次
+    const verdict = judgeTurn(sec, turnVerdict?.v);
+    turnVerdict = null;
+    const loud = `最大音量 ${turnPeak.toFixed(3)}${turnPeak >= 0.99 ? '，爆音' : ''}`;
     turnPeak = 0;
-    queueTurn();
+    if (verdict.pass) {
+      log(`切出一句 ${sec.toFixed(1)} 秒（${loud}），送去轉寫`);
+      queueTurn();
+    } else {
+      stageAudio();
+      engine.skip?.();
+      finishedPreview(currentTurn);
+      showHeard();
+    }
     turnAudio = [];
     turnAudioBytes = 0;
   }
+}
+
+// ---- 只聽使用者的聲音（聲紋，bin/voiceprint.mjs、core/voiceprint.mjs）----
+
+let voiceprint = null;
+let voiceprintKey = '';
+let turnVerdict = null; // 這句在停 0.4 秒時先比的聲紋（只看不記；切句時用同一個聲紋記，不再算一次）
+
+function startVoiceprint() {
+  const { enabled, threshold, minSeconds } = config.voiceprint;
+  const key = enabled ? `${threshold}:${minSeconds}` : '';
+  if (key === voiceprintKey) return;
+  voiceprintKey = key;
+  voiceprint = enabled ? createVoiceprintFilter({
+    model: join(STATE_DIR, 'models', 'speaker', VOICEPRINT_MODEL), file: VOICEPRINT_FILE, threshold, minSeconds, log,
+  }) : null;
+  if (voiceprint) log(voiceprint.enrolled() ? '只聽你的聲音：開（聲紋已錄好）' : '只聽你的聲音：開，先從你接下來講的話錄聲紋樣本（約 15 秒，照常轉寫）');
+}
+
+// 這句是不是使用者講的：還在錄樣本、太短、像使用者都放行；不像就不轉寫。v：停 0.4 秒時算好的聲紋
+function judgeTurn(sec, v = null) {
+  if (!voiceprint) return { pass: true };
+  const r = v ? voiceprint.commit(v, sec) : voiceprint.check(Buffer.concat(turnAudio, turnAudioBytes), sec);
+  if (r.verdict === 'enrolling') log(`錄聲紋樣本：還要約 ${Math.ceil(voiceprint.needSeconds())} 秒`);
+  else if (r.verdict === 'enrolled') {
+    log(`聲紋樣本錄好了（留下 ${r.kept} 句）：之後不像你的聲音不轉寫`);
+    announceSettings();
+  } else if (r.verdict === 'other') log(`聲紋不像你（相似度 ${r.score.toFixed(2)}，${sec.toFixed(1)} 秒，${r.ms} ms）：這句不轉寫`);
+  else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '太短不判斷' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
+  return r;
 }
 
 // 開口了：先讀上下文、接好連線；講到一半的提早整理作廢（等整段講完一起整理）
@@ -396,6 +449,7 @@ function speechStarted() {
   turnAudioBytes = 0;
   previewedBytes = 0;
   if (early) dropEarly('又開口了');
+  turnVerdict = null;
   void prefetchContext();
   warmUp();
   showHeard();
@@ -438,7 +492,11 @@ function showHeard() {
   const parts = [...(segment?.parts ?? []), ...previews.values()];
   const text = parts.map(withSpacing).join('').trim();
   if (early && !detector.speaking) bubble('working', { text: early.raw });
-  else if (detector.speaking || text) bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text });
+  else if (detector.speaking || text) {
+    // 還在錄聲紋樣本：小框多一行說還要講多久
+    const enrolling = voiceprint && !voiceprint.enrolled() ? `建立你的聲紋中，再正常講約 ${Math.ceil(voiceprint.needSeconds())} 秒` : '';
+    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, detail: enrolling });
+  }
   else if (!outputQueue.length && !outputBusy) bubble('hide');
 }
 
@@ -1077,6 +1135,15 @@ async function tick() {
   if (active && !ffmpeg && !inputFile && Date.now() >= captureRetryAt) startCapture();
   if (!active && ffmpeg && !inputFile) stopCapture();
   if (!active && segment) segmentForce = true; // 暫停或切到不收音的 app：講到一半的那段先整理
+
+  if (existsSync(VOICEPRINT_RESET)) {
+    try { unlinkSync(VOICEPRINT_RESET); } catch { /* 已經處理 */ }
+    if (voiceprint) {
+      voiceprint.reset();
+      log('重錄聲紋：從你接下來講的話錄樣本（約 15 秒，照常轉寫）');
+      announceSettings();
+    }
+  }
 
   if (existsSync(REVERT)) {
     try { unlinkSync(REVERT); } catch { /* 已經處理 */ }

@@ -102,6 +102,7 @@ export function createLocalEngine({ model, language = 'auto', threads = 2, onFin
     flush() {},
     busy: () => queue.length > 0 || decoding,
     housekeeping() {},
+    skip() { chunks = []; bytes = 0; }, // 這句不要（聲紋不像使用者）
     close() { chunks = []; bytes = 0; queue.length = 0; },
   };
 }

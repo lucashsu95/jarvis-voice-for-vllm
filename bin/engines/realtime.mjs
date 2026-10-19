@@ -37,6 +37,12 @@ export function createRealtimeEngine({ connector, onFinal, onError, log }) {
       if (!t) { log('轉寫連線剛失敗，這句沒送'); return; }
       t.commit({ startMs: 0, endMs: 0 });
     },
+    // 這句不要（聲紋不像使用者）：聲音已經串流出去了，照樣 commit 讓連線的緩衝清掉，回來的字丟掉
+    skip() {
+      const t = current();
+      if (!t) return;
+      t.discard(t.commit({ startMs: 0, endMs: 0 }));
+    },
     flush() { transcriber?.flush(); },
     busy: () => !!transcriber && !transcriber.failed && transcriber.busy(),
     // 每輪主迴圈呼叫：安靜夠久、或連線快到 10 分鐘上限時先關

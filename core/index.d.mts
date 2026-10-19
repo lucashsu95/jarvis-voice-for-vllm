@@ -195,3 +195,20 @@ export function ownKeyService(input: { provider?: string; model?: string; apiKey
 /** 同一個請求同時送 copies 份，誰先成功用誰、其他的取消；call 要吃 args.signal */
 export function hedge<A extends { signal?: AbortSignal }, R>(call: (args: A) => Promise<R>, copies?: number): (args: A) => Promise<R>;
 export const CORE_VERSION: string;
+
+/** 聲紋過濾：聲紋（正規化過的 embedding）由呼叫端算，這裡判斷是不是使用者 */
+export const VOICEPRINT_THRESHOLD: number;
+export const VOICEPRINT_MIN_SECONDS: number;
+export const ENROLL_SECONDS: number;
+export interface VoiceprintVerdict { pass: boolean; verdict: 'enrolling' | 'enrolled' | 'short' | 'mine' | 'other'; score: number | null; kept?: number }
+export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[] }; threshold?: number; minSeconds?: number }): {
+  enrolled(): boolean;
+  needSeconds(): number;
+  judge(v: ArrayLike<number>, sec: number): VoiceprintVerdict;
+  reset(): void;
+  state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] };
+};
+export function pickEnrollment<T extends { v: ArrayLike<number>; sec: number }>(items: T[]): T[];
+export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number;
+export function normalize(v: ArrayLike<number>): number[];
+export function meanVector(items: { v: ArrayLike<number>; sec?: number }[]): number[] | null;

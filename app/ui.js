@@ -68,7 +68,10 @@ let flash = null; // { kind: 'pasted' | 'nofield', until }：短暫顯示的結�
 let settings = {
   engine: '', ai: { enabled: false, provider: 'deepseek', ready: false }, autoFocus: false, commands: false, decider: '',
   cubelv: { loggedIn: false, email: '' },
+  voiceprint: { enabled: false, ready: false, enrolled: false },
 };
+let voiceprintItem = null;
+let voiceprintResetItem = null;
 let engineMenuItem = null;
 const engineItems = {};
 let cubelvItem = null;
@@ -324,7 +327,7 @@ function refresh() {
 }
 
 function refreshSettings() {
-  if (!aiMenuItem || !cubelvItem || !keysItem) return;
+  if (!aiMenuItem || !cubelvItem || !keysItem || !voiceprintItem) return;
   const { ai } = settings;
   const signedOut = t('（未登入）', ' (not signed in)');
   const missing = ai.provider === 'cubelv' ? signedOut : t('（沒有 key）', ' (no key)');
@@ -347,6 +350,13 @@ function refreshSettings() {
   for (const [provider, item] of Object.entries(aiItems)) item.setState(ai.enabled && ai.provider === provider ? 1 : 0);
   autoFocusItem.setState(settings.autoFocus ? 1 : 0);
   commandsItem.setState(settings.commands ? 1 : 0);
+  const vp = settings.voiceprint ?? {};
+  voiceprintItem.setState(vp.enabled ? 1 : 0);
+  voiceprintItem.setTitle(!vp.enabled ? t('只聽我的聲音（聲紋）', 'Only my voice (voiceprint)')
+    : !vp.ready ? t('只聽我的聲音（聲紋模型沒裝，重跑 install.sh）', 'Only my voice (model missing; rerun install.sh)')
+      : vp.enrolled ? t('只聽我的聲音（聲紋已錄好）', 'Only my voice (voiceprint ready)')
+        : t('只聽我的聲音（正在從你講的話錄聲紋）', 'Only my voice (learning your voice)'));
+  voiceprintResetItem.setEnabled(!!(vp.enabled && vp.ready && vp.enrolled));
   commandsItem.setTitle(settings.decider
     ? t(`語音指令（直接操作 app，${settings.decider} 決策）`, `Voice commands (operate apps, decided by ${settings.decider})`)
     : t('語音指令（直接操作 app）', 'Voice commands (operate apps)'));
@@ -642,6 +652,15 @@ function toggleSetting(key) {
   updateConfig((config) => { config[key] = !settings[key]; });
 }
 
+// 只聽我的聲音：開關寫進設定檔的 voiceprint.enabled
+function toggleVoiceprint() {
+  updateConfig((config) => { config.voiceprint = { ...(config.voiceprint ?? {}), enabled: !settings.voiceprint?.enabled }; });
+}
+
+function requestVoiceprintReset() {
+  fm().createFileAtPathContentsAttributes(statePath('voiceprint-reset'), $(), $());
+}
+
 function requestRevert() {
   fm().createFileAtPathContentsAttributes(statePath('revert-request'), $(), $());
 }
@@ -748,7 +767,11 @@ function bubbleContent(e) {
   const orange = $.NSColor.systemOrangeColor;
   const step = e.detail ? `\n${e.detail}` : '';
   switch (e.state) {
-    case 'hearing': return e.text ? [t('聽到', 'Hearing'), e.text, blue] : [t('聽著…', 'Listening…'), '', blue];
+    case 'hearing': {
+      // 還在錄聲紋樣本：多一行說還要講多久
+      if (!e.text) return e.detail ? [t('聽著…', 'Listening…'), e.detail, blue] : [t('聽著…', 'Listening…'), '', blue];
+      return [t('聽到', 'Hearing'), `${e.text}${step}`, blue];
+    }
     case 'working': return [t('整理中', 'Cleaning up'), e.text, blue];
     case 'pasted': return [t('已貼上', 'Pasted'), '', green];
     case 'command': return [t('語音指令', 'Voice command'), `${e.text}${step}`, blue];
@@ -987,6 +1010,8 @@ ObjC.registerSubclass({
     'keyLate:': { types: ['void', ['id']], implementation() { if (keyParts.task) keyDone('out'); } },
     'toggleAutoFocus:': { types: ['void', ['id']], implementation() { toggleSetting('autoFocus'); } },
     'toggleCommands:': { types: ['void', ['id']], implementation() { toggleSetting('commands'); } },
+    'toggleVoiceprint:': { types: ['void', ['id']], implementation() { toggleVoiceprint(); } },
+    'resetVoiceprint:': { types: ['void', ['id']], implementation() { requestVoiceprintReset(); } },
     'revert:': { types: ['void', ['id']], implementation() { requestRevert(); } },
     'stdout:': { types: ['void', ['id']], implementation(note) { onStdout(note); } },
     'ended:': { types: ['void', ['id']], implementation() { onEnded(); } },
@@ -1052,6 +1077,10 @@ function startUI() {
   menu.addItem(autoFocusItem);
   commandsItem = menuItem(t('語音指令', 'Voice commands'), 'toggleCommands:');
   menu.addItem(commandsItem);
+  voiceprintItem = menuItem(t('只聽我的聲音（聲紋）', 'Only my voice (voiceprint)'), 'toggleVoiceprint:');
+  menu.addItem(voiceprintItem);
+  voiceprintResetItem = menuItem(t('重錄我的聲紋', 'Re-learn my voice'), 'resetVoiceprint:');
+  menu.addItem(voiceprintResetItem);
   menu.addItem($.NSMenuItem.separatorItem);
   menu.addItem(menuItem(t('編輯專有名詞…', 'Edit vocabulary…'), 'openVocabulary:'));
   menu.addItem(menuItem(t('編輯設定檔…', 'Edit config…'), 'openConfig:'));

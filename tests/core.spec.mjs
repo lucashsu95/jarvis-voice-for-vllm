@@ -145,3 +145,35 @@ test('同步腳本：複製核心並在每個檔案寫上來源 commit', async (
   const synced = await import(join(dest, 'index.mjs'));
   assert.equal(typeof synced.editSegment, 'function');
 });
+
+test('聲紋：先錄 15 秒樣本（混進來的別人剔除）；之後像的放行、不像的擋、太短不判斷；很確定的句子加進最近的聲音', () => {
+  // 假的聲紋：使用者在 x 軸附近，別人在 y 軸附近（8 維，加一點雜訊）
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+  const voice = (axis) => core.normalize(Array.from({ length: 8 }, (_, i) => (i === axis ? 1 : 0) + rand() * 0.5));
+  const vp = core.createVoiceprint();
+  assert.equal(vp.enrolled(), false);
+  assert.equal(vp.needSeconds(), core.ENROLL_SECONDS);
+  // 錄樣本：收滿 15 秒（自己 3 句、中間混一句別人）
+  assert.equal(vp.judge(voice(0), 4).verdict, 'enrolling');
+  assert.equal(vp.judge(voice(1), 4).verdict, 'enrolling');
+  assert.equal(vp.judge(voice(0), 4).verdict, 'enrolling');
+  const done = vp.judge(voice(0), 4);
+  assert.equal(done.verdict, 'enrolled');
+  assert.equal(done.kept, 3, '別人那句不算進樣本');
+  assert.equal(vp.needSeconds(), 0);
+  const mine = vp.judge(voice(0), 3);
+  assert.equal(mine.pass, true);
+  assert.equal(mine.verdict, 'mine');
+  const other = vp.judge(voice(1), 3);
+  assert.equal(other.pass, false);
+  assert.ok(other.score < core.VOICEPRINT_THRESHOLD);
+  assert.equal(vp.judge(voice(1), 1).verdict, 'short', '太短不判斷，放行');
+  assert.ok(vp.state().recent.length >= 1, '很確定的句子加進最近的聲音');
+  // 存檔再讀回來一樣能判斷
+  const again = core.createVoiceprint({ state: JSON.parse(JSON.stringify(vp.state())) });
+  assert.equal(again.enrolled(), true);
+  assert.equal(again.judge(voice(1), 3).pass, false);
+  vp.reset();
+  assert.equal(vp.enrolled(), false);
+});

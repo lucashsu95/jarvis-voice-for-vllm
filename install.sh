@@ -67,6 +67,16 @@ if [[ "$ENGINE" == local ]]; then
   fi
 fi
 
+# 「只聽我的聲音」用的聲紋模型（CAM++ 中文，約 28 MB）：不論哪個引擎都裝，選單開了才會用
+SPEAKER_MODEL="$STATE/models/speaker/campplus_zh.onnx"
+if [[ ! -f "$SPEAKER_MODEL" ]]; then
+  say "下載聲紋模型 CAM++（約 28 MB，來源 k2-fsa/sherpa-onnx）"
+  mkdir -p "$STATE/models/speaker"
+  curl -fL --retry 3 --progress-bar -o "$SPEAKER_MODEL.part" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx" \
+    && mv "$SPEAKER_MODEL.part" "$SPEAKER_MODEL" || say "聲紋模型沒下載成功（之後重跑 install.sh 再裝）；「只聽我的聲音」先不能用"
+fi
+
 say "設定檔：$CONFIG（引擎 $ENGINE）"
 node - "$CONFIG" "$ENGINE" <<'EOF'
 const fs = require('fs');

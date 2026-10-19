@@ -46,6 +46,11 @@
 //     "preview": true,                 // 講話中用本機 SenseVoice 認目前這句，在游標旁的小框即時顯示（只顯示，不貼）
 //     "bubble": true,                  // 游標旁的小框：聽到的字、整理中、已貼上（幾秒）、指令、出錯
 //     "warm": true                     // 開口時先把轉寫、AI 的連線接好，講完不用重新握手
+//   },
+//   "voiceprint": {                    // 只聽我的聲音：本機聲紋（sherpa-onnx CAM++），不像你的句子不轉寫、不貼（選單可以切）
+//     "enabled": false,                // 第一次開會從你接下來講的 15 秒錄樣本（照常轉寫）；選單「重錄我的聲紋」重來
+//     "threshold": 0.3,                // 跟你的聲紋相似度低於這個就不要（實測別人最高 0.27）
+//     "minSeconds": 1.5                // 比這短的句子太短判斷不準，照常轉寫
 //   }
 // }
 
@@ -108,6 +113,7 @@ export function defaults() {
     commands: true,
     jev: { apiKey: '', apiKeyFile: '', apiKeyCommand: '', model: 'jev-latest' },
     speed: { earlyTranscribeMs: 400, pasteAfterMs: 1200, hedge: 2, preview: true, bubble: true, warm: true },
+    voiceprint: { enabled: false, threshold: 0.3, minSeconds: 1.5 },
   };
 }
 
@@ -251,6 +257,7 @@ export function loadConfig() {
     ai: { ...base.ai, ...file.ai, autoVocabulary: { ...base.ai.autoVocabulary, ...file.ai?.autoVocabulary } },
     jev: { ...base.jev, ...file.jev },
     speed: { ...base.speed, ...file.speed },
+    voiceprint: { ...base.voiceprint, ...file.voiceprint },
   };
   if (!ENGINES.includes(config.engine)) {
     error = `engine 只能是 ${ENGINES.join('、')}，設定檔寫的是「${config.engine}」`;
