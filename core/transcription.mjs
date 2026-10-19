@@ -42,8 +42,9 @@ export function permanentError(message) {
 //   discard(序號)：這句作廢（停一下先送、之後又開口，整句會重送）：它的字不算進全文，也不用等它回來。
 //   startHint()：commit 前就先出字時，這句從哪裡開始；elapsed()：現在是錄音開始後幾 ms（沒有起點的字用）。
 //   lazy：有東西要送才連線（Mac 小程式）；不給就馬上連（按下錄音的輸入框）。
-//   voiceprint：{ config() → 擋法或 null, onReady(info) → 擋法變了?, onTurn(event) → 擋法變了? }（core/voiceprint.mjs 的
+//   voiceprint：{ config() → 擋法或 null, onReady(info) → 擋法變了?, onTurn(event) → 擋法變了?, onUnsupported() }（core/voiceprint.mjs 的
 //     createRemoteVoiceprint().transcription）。後端擋掉的句子當成沒有字（不等字、不重送）。updateVoiceprint()：擋法變了再送一次。
+//     onUnsupported：這個後端不會擋（舊版、沒裝模型），畫面別再顯示「正在建立聲紋」。
 export function createTranscriber({
   connect,
   onItem,
@@ -229,6 +230,12 @@ export function createTranscriber({
     let event;
     try { event = JSON.parse(typeof raw === 'string' ? raw : String(raw)); } catch { return; }
     if (event.type === 'voiceprint.ready') {
+      // 後端認得、但模型沒載起來：照常轉寫、不會擋，跟舊後端一樣看待
+      if (event.available === false) {
+        if (voiceprintState !== 'unsupported') voiceprint?.onUnsupported?.();
+        voiceprintState = 'unsupported';
+        return;
+      }
       voiceprintState = 'ready';
       if (voiceprint?.onReady?.(event)) sendVoiceprintConfig();
       return;
@@ -299,8 +306,11 @@ export function createTranscriber({
     if (event.type === 'error') {
       // 舊後端把聲紋的事件轉給了 OpenAI：不支援，之後不送，照常轉寫（不用重連）
       if (String(event.error?.event_id ?? '').startsWith('voiceprint_')) {
-        if (voiceprintState !== 'unsupported') note('voiceprint not supported by this server');
-        if (voiceprintState !== 'ready') voiceprintState = 'unsupported';
+        if (voiceprintState === 'unknown') {
+          note('voiceprint not supported by this server');
+          voiceprintState = 'unsupported';
+          voiceprint?.onUnsupported?.();
+        }
         return;
       }
       // 斷句時這條連線裡沒有聲音：沒有東西可轉，這次斷句就算完成

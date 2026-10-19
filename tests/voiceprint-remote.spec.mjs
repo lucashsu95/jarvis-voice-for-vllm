@@ -131,12 +131,17 @@ test('後端算聲紋：斷線重連時，擋掉的句子不重送、還在等�
 });
 
 test('後端算聲紋：舊後端把設定轉給 OpenAI、回錯（event_id 是 voiceprint_ 開頭）：不重連、之後不送，照常轉寫', async () => {
-  const voiceprint = { config: () => GATE, onTurn: () => false };
+  let unsupported = 0;
+  const voiceprint = { config: () => GATE, onTurn: () => false, onUnsupported: () => { unsupported += 1; } };
   const { session, errors, say } = startSpeech(voiceprint);
   await tick();
   const socket = FakeSocket.all[0];
   socket.open();
-  socket.emit({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', message: "Invalid value: 'voiceprint.config'.", event_id: socket.sent[0].event_id } });
+  // 實際 OpenAI 回的（10/19 箱子接 dev 舊版 ai_prompt 量到的）
+  const oldServerError = { type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', message: "Invalid value: 'voiceprint.config'. Supported values are: 'session.update', ...", param: 'type', event_id: socket.sent[0].event_id } };
+  socket.emit(oldServerError);
+  socket.emit(oldServerError);
+  assert.equal(unsupported, 1, '畫面只收一次通知');
   say(2);
   await tick(300);
   assert.equal(socket.of('voiceprint.turn_info').length, 0, '知道不支援後就不送');
@@ -145,6 +150,21 @@ test('後端算聲紋：舊後端把設定轉給 OpenAI、回錯（event_id 是 
   assert.equal(await session.finish(), '照常轉寫');
   assert.equal(FakeSocket.all.length, 1, '沒有重連');
   assert.deepEqual(errors, []);
+  session.close();
+});
+
+test('後端認得但模型沒載起來（available=false）：當成不支援，之後不送聲紋事件', async () => {
+  let unsupported = 0;
+  const voiceprint = { config: () => GATE, onTurn: () => false, onUnsupported: () => { unsupported += 1; } };
+  const { session, say } = startSpeech(voiceprint);
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  socket.emit({ type: 'voiceprint.ready', model: core.REMOTE_VOICEPRINT_MODEL, available: false });
+  say(2);
+  await tick(300);
+  assert.equal(unsupported, 1);
+  assert.equal(socket.of('voiceprint.turn_info').length, 0);
   session.close();
 });
 

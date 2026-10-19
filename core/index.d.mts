@@ -131,6 +131,8 @@ export interface TranscriptionVoiceprint {
   onReady?(info: { model?: string }): boolean;
   /** 每句的結果；回傳 true＝擋法變了，再送一次 */
   onTurn?(event: VoiceprintTurnEvent): boolean;
+  /** 這個後端不會擋（舊版、沒裝模型）：照常轉寫，畫面別再顯示「正在建立聲紋」 */
+  onUnsupported?(): void;
 }
 export interface Transcriber {
   append(bytes: Uint8Array): void;
