@@ -6,6 +6,9 @@
 // 一開錄就被當成在講話、整段不斷句，真的開口時那句被標成 0:00。開始一句要比底噪大 3 倍，講話中要比底噪大 2 倍才不算停。
 // 底噪＝這段時間第 10 百分位的音量；剛開錄還沒累積 1 秒時當作沒有底噪，只用固定門檻。
 // 尖峰也算：短促的子音 RMS 不高、尖峰高，尖峰到門檻的 5 倍（沒有底噪時是 0.055）就算有人聲。
+// peakOverNoise（選項）：還沒開口時的尖峰門檻改成「底噪的這麼多倍」（不低於 0.055）。預設照上面（底噪 × 3 × 5＝15 倍）；
+// Mac 的內建麥克風在風扇聲裡底噪約 0.009，15 倍是 0.14，比人正常講話的尖峰（0.10～0.18）還高，整句聽不到，Mac 用 9 倍
+// （同時量到沒人講話時的尖峰最大約底噪的 7.5 倍）。
 
 const NOISE_WINDOW = 30;
 const NOISE_WARMUP = 10;
@@ -18,6 +21,10 @@ const END_SILENCE_MS = 850;
 const FINISH_MIN_MS = 100;
 
 export class AudioTurnDetector {
+  constructor({ peakOverNoise = 0 } = {}) {
+    this.peakOverNoise = peakOverNoise;
+  }
+
   candidateStart = null;
   voicedMs = 0;
   silenceMs = 0;
@@ -25,6 +32,8 @@ export class AudioTurnDetector {
   lastVoiceEnd = 0;
   lastVoiced = false; // 最近一批有沒有人聲（算「停了多久」用）
   shortBlips = 0; // 有聲音但不到 180 ms、沒算成一句的次數（給呼叫端記 log，自己歸零）
+  missLevel = 0; // 沒在講話時、沒算成人聲的那幾批裡最大的音量與尖峰（診斷門檻是不是太高，給呼叫端記 log，自己歸零）
+  missPeak = 0;
   recentLevels = [];
 
   get speaking() { return this.activeStart !== null; }
@@ -32,6 +41,18 @@ export class AudioTurnDetector {
   get starting() { return this.activeStart === null && this.candidateStart !== null; }
   // 正在講的這句從哪裡開始；沒在講是 null
   get currentStartMs() { return this.activeStart; }
+
+  // 現在的底噪和開口門檻（RMS 與尖峰），給呼叫端記 log
+  thresholds() {
+    const noise = this.noiseLevel();
+    const level = Math.max(MIN_LEVEL, noise * START_OVER_NOISE);
+    return { noise, level, peak: this.startPeak(noise, level) };
+  }
+
+  // 還沒開口時，尖峰要多高才算有人聲
+  startPeak(noise, level) {
+    return this.peakOverNoise ? Math.max(MIN_LEVEL * PEAK_OVER_LEVEL, noise * this.peakOverNoise) : level * PEAK_OVER_LEVEL;
+  }
 
   push(samples, startMs) {
     if (!samples.length) return null;
@@ -48,8 +69,13 @@ export class AudioTurnDetector {
     this.recentLevels.push(level);
     if (this.recentLevels.length > NOISE_WINDOW) this.recentLevels.shift();
     const threshold = Math.max(MIN_LEVEL, noise * (this.activeStart === null ? START_OVER_NOISE : CONTINUE_OVER_NOISE));
-    const voiced = level >= threshold || peak >= threshold * PEAK_OVER_LEVEL;
+    const peakThreshold = this.activeStart === null ? this.startPeak(noise, threshold) : threshold * PEAK_OVER_LEVEL;
+    const voiced = level >= threshold || peak >= peakThreshold;
     this.lastVoiced = voiced;
+    if (!voiced && this.activeStart === null) {
+      if (level > this.missLevel) this.missLevel = level;
+      if (peak > this.missPeak) this.missPeak = peak;
+    }
     if (voiced) {
       if (this.candidateStart === null) this.candidateStart = startMs;
       this.voicedMs += durationMs;
@@ -109,8 +135,8 @@ export class AudioTurnDetector {
 // 還沒切句又有人聲就報 resumed（先送的那份作廢），沒有就等 850 ms 照常切句，先送的那份就是這句的結果（中間只有靜音）。
 // 存起來的是傳進來那批樣本本身，呼叫端每批要給新的陣列，不能重複用同一塊。
 export class TurnSplitter {
-  constructor({ preRollBatches = 4, tentativeMs = 400 } = {}) {
-    this.detector = new AudioTurnDetector();
+  constructor({ preRollBatches = 4, tentativeMs = 400, peakOverNoise = 0 } = {}) {
+    this.detector = new AudioTurnDetector({ peakOverNoise });
     this.preRoll = [];
     this.preRollBatches = preRollBatches;
     this.tentativeMs = tentativeMs;

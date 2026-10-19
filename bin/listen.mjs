@@ -56,6 +56,7 @@ const SEGMENT_CHECK_MS = 100;
 const HOLD_MS = 60_000; // 寫的時候前景是不收音的 app（例如開會），最多等一分鐘回來再寫
 const MAX_SEGMENT_CHARS = 1500; // 一直講不停太長就先整理這一段
 const NOT_IN_FIELD_SURE = 0.95; // 游標不在輸入框、AI 說是打字時，Jev 要這麼確定是指令才改當指令
+const MAC_PEAK_OVER_NOISE = 9; // 還沒開口時尖峰到底噪的 9 倍就算有人聲（10/19 實測：風扇聲裡沒人講話最大約 7.5 倍，正常講話 10 倍以上）
 
 const argv = process.argv.slice(2);
 const fileIndex = argv.indexOf('--file');
@@ -343,7 +344,12 @@ function trackLevel(samples) {
   if (levelPeak === 0) notes.push('完全沒聲音，多半是剛給麥克風權限前就開了，重開麥克風');
   if (levelPeak >= 0.99) notes.push('有爆音（音量到頂），轉寫可能會錯');
   if (detector.shortBlips) notes.push(`${detector.shortBlips} 次聲音不到 0.18 秒，當雜音沒算成一句`);
-  log(`麥克風 15 秒內最大音量 ${levelPeak.toFixed(3)}（人聲門檻：尖峰 0.055 起，跟著底噪往上調）${notes.length ? `：${notes.join('；')}` : ''}`);
+  // 門檻跟著底噪走：記下現在的底噪、開口門檻，和沒算成人聲的聲音最大到多少（講話沒被聽到時看差多少）
+  const th = detector.thresholds();
+  const gate = `底噪 ${th.noise.toFixed(4)}、開口門檻 RMS ${th.level.toFixed(3)} 或尖峰 ${th.peak.toFixed(3)}；沒算成人聲的最大 RMS ${detector.missLevel.toFixed(3)}、尖峰 ${detector.missPeak.toFixed(3)}`;
+  log(`麥克風 15 秒內最大音量 ${levelPeak.toFixed(3)}（${gate}）${notes.length ? `：${notes.join('；')}` : ''}`);
+  detector.missLevel = 0;
+  detector.missPeak = 0;
   // 權限詢問還沒按允許時開的麥克風，允許之後也一直收到 0：重開一次就好
   if (levelPeak === 0) reopenCapture = true;
   detector.shortBlips = 0;
@@ -458,7 +464,8 @@ function startCapture() {
   log('開麥克風');
   levelPeak = 0;
   levelSince = Date.now();
-  splitter = new TurnSplitter({ tentativeMs: config.engine === 'openai' ? config.speed.earlyTranscribeMs : 0 });
+  // 尖峰門檻用底噪的 9 倍（core/turns.mjs 的 peakOverNoise）：風扇聲裡正常講話才聽得到
+  splitter = new TurnSplitter({ tentativeMs: config.engine === 'openai' ? config.speed.earlyTranscribeMs : 0, peakOverNoise: MAC_PEAK_OVER_NOISE });
   detector = splitter.detector;
   carry = Buffer.alloc(0);
   const input = inputFile ? ['-re', '-i', inputFile] : ['-f', 'avfoundation', '-i', ':default'];

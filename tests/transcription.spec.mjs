@@ -137,6 +137,31 @@ test('TurnSplitter 暫定斷句：停 0.4 秒先報一次 tentative，又開口�
   for (let n = 0; n < 9; n += 1) assert.equal(off.push(batch(0), 300 + n * 100).tentative, false);
 });
 
+test('斷句：風扇聲裡（底噪約 0.009）正常講話的尖峰 0.10 預設聽不到，peakOverNoise 9 聽得到；沒人講話的尖峰（約 7.5 倍）兩種都不算', () => {
+  // 一批 2400 個樣本：底噪是均勻的小雜訊（RMS 約 0.009），講話是同樣的雜訊上每 20 個樣本一個尖峰
+  const noisy = (rms, peak = 0) => {
+    const b = new Int16Array(2400);
+    for (let i = 0; i < b.length; i += 1) b[i] = Math.round((i % 2 ? 1 : -1) * rms * 32767);
+    if (peak) for (let i = 0; i < b.length; i += 20) b[i] = Math.round(peak * 32767);
+    return b;
+  };
+  const run = (opts) => {
+    const d = new core.AudioTurnDetector(opts);
+    for (let n = 0; n < 30; n += 1) d.push(noisy(0.009), n * 100); // 3 秒底噪
+    const ambient = [0.066, 0.066, 0.066].map((p, n) => (d.push(noisy(0.009, p), 3000 + n * 100), d.speaking));
+    for (let n = 0; n < 3; n += 1) d.push(noisy(0.009), 3300 + n * 100);
+    for (let n = 0; n < 3; n += 1) d.push(noisy(0.009, 0.1), 3600 + n * 100);
+    return { ambient: ambient.some(Boolean), speech: d.speaking, peak: d.thresholds().peak };
+  };
+  const before = run();
+  assert.equal(before.speech, false, `預設門檻 ${before.peak.toFixed(3)}`);
+  const mac = run({ peakOverNoise: 9 });
+  assert.equal(mac.ambient, false);
+  assert.equal(mac.speech, true, `9 倍門檻 ${mac.peak.toFixed(3)}`);
+  // 安靜的房間：尖峰門檻不低於 0.055
+  assert.ok(Math.abs(new core.AudioTurnDetector({ peakOverNoise: 9 }).thresholds().peak - 0.055) < 1e-9);
+});
+
 test('斷句：有聲音但還不到 180 ms 時是 starting（還不知道是開口還是雜音）', () => {
   const d = new core.AudioTurnDetector();
   d.push(new Int16Array(2400), 0);

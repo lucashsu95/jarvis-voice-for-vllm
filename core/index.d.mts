@@ -77,6 +77,13 @@ export class AudioTurnDetector {
   readonly currentStartMs: number | null;
   silenceMs: number;
   lastVoiced: boolean;
+  /** 沒在講話時沒算成人聲的那幾批裡最大的音量與尖峰（呼叫端記 log 後自己歸零） */
+  missLevel: number;
+  missPeak: number;
+  /** peakOverNoise：還沒開口時的尖峰門檻改成底噪的這麼多倍（不低於 0.055）；預設是底噪 × 15 */
+  constructor(opts?: { peakOverNoise?: number });
+  /** 現在的底噪與開口門檻（RMS、尖峰） */
+  thresholds(): { noise: number; level: number; peak: number };
   lastVoiceEnd: number;
   shortBlips: number;
   push(samples: Int16Array, startMs: number): AudioTurn | null;
@@ -84,7 +91,7 @@ export class AudioTurnDetector {
 }
 export class TurnSplitter {
   /** tentativeMs：講話中停這麼久先報 tentative（預設 400，0 是不報） */
-  constructor(opts?: { preRollBatches?: number; tentativeMs?: number });
+  constructor(opts?: { preRollBatches?: number; tentativeMs?: number; peakOverNoise?: number });
   readonly detector: AudioTurnDetector;
   readonly speaking: boolean;
   readonly currentStartMs: number | null;
