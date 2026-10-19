@@ -527,6 +527,10 @@ function finishTurn() {
 }
 
 let captureEnded = null;
+// 麥克風卡住：ffmpeg 還活著但不再送聲音（電腦睡醒、麥克風裝置換了之後會這樣，10/19 卡了 4 小時才發現）。
+// 開著麥克風卻 3 秒都沒有聲音進來（安靜也會一直送 0），就重開
+const CAPTURE_STALL_MS = 3000;
+let lastAudioAt = 0;
 function startCapture() {
   log('開麥克風');
   levelPeak = 0;
@@ -544,9 +548,11 @@ function startCapture() {
   let errText = '';
   let gotAudio = false;
   child.stderr.on('data', (d) => { errText = (errText + d.toString()).slice(-400); });
+  lastAudioAt = Date.now() + 5000; // 剛開的麥克風要一兩秒才有聲音：多等 5 秒
   child.stdout.on('data', (data) => {
     if (ffmpeg !== child) return;
     gotAudio = true;
+    lastAudioAt = Date.now();
     carry = carry.length ? Buffer.concat([carry, data]) : data;
     while (carry.length >= BATCH_BYTES) {
       takeBatch(Buffer.from(carry.subarray(0, BATCH_BYTES)));
@@ -1141,6 +1147,10 @@ async function tick() {
   frontActive = active;
 
   if (reopenCapture && ffmpeg && !inputFile) { reopenCapture = false; stopCapture(); }
+  if (ffmpeg && !inputFile && Date.now() - lastAudioAt > CAPTURE_STALL_MS) {
+    log(`麥克風 ${((Date.now() - lastAudioAt) / 1000).toFixed(1)} 秒沒有聲音進來（ffmpeg 卡住，多半是電腦睡醒或換了麥克風），重開麥克風`);
+    stopCapture();
+  }
   if (active && !ffmpeg && !inputFile && Date.now() >= captureRetryAt) startCapture();
   if (!active && ffmpeg && !inputFile) stopCapture();
   if (!active && segment) segmentForce = true; // 暫停或切到不收音的 app：講到一半的那段先整理

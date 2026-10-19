@@ -33,7 +33,7 @@ for p in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg "$(command -v ffmpeg || 
   [[ -n "$p" && -x "$p" ]] && { FFMPEG="$p"; break; }
 done
 [[ -n "$FFMPEG" ]] || fail "需要 ffmpeg 收音：brew install ffmpeg"
-note "node $(node -v)（$NODE）、ffmpeg $FFMPEG"
+note "node $(node -v)（${NODE}）、ffmpeg $FFMPEG"
 
 say "安裝套件"
 (cd "$DIR" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
@@ -77,7 +77,7 @@ if [[ ! -f "$SPEAKER_MODEL" ]]; then
     && mv "$SPEAKER_MODEL.part" "$SPEAKER_MODEL" || say "聲紋模型沒下載成功（之後重跑 install.sh 再裝）；「只聽我的聲音」先不能用"
 fi
 
-say "設定檔：$CONFIG（引擎 $ENGINE）"
+say "設定檔：${CONFIG}（引擎 ${ENGINE}）"
 node - "$CONFIG" "$ENGINE" <<'EOF'
 const fs = require('fs');
 const [file, engine] = process.argv.slice(2);
