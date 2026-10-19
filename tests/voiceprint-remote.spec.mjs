@@ -215,3 +215,74 @@ test('前端記樣本：後端送回來的聲紋湊滿樣本就存檔、擋法�
   remote.reset();
   assert.equal(remote.enrolled(), false);
 });
+
+// 門檻依個人調（計劃 cubelv_docs 2026-10-19_聲紋門檻依個人自動調.md）
+test('依個人門檻：比對群裡有人跟你很像，門檻就高；跟誰都不像維持 0.3；夾在 0.3～0.5', () => {
+  const cohort = core.defaultCohort();
+  assert.equal(cohort.length, 252);
+  assert.equal(cohort[0].length, 192);
+  assert.ok(Math.abs(Math.hypot(...cohort[0]) - 1) < 1e-6);
+  // 參考聲紋就是比對群裡的某人：最像 1.0 → 上限 0.5
+  assert.equal(core.personalThreshold({ reference: cohort[3] }), core.VOICEPRINT_THRESHOLD_CAP);
+  // 跟比對群都不太像（隨機方向）：維持下限 0.3
+  let seed = 3;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+  const far = core.normalize(Array.from({ length: 192 }, rand));
+  const nearest = Math.max(...cohort.map((c) => core.cosine(far, c)));
+  assert.ok(nearest < 0.25, `隨機方向跟比對群最像 ${nearest}`);
+  assert.equal(core.personalThreshold({ reference: far }), core.VOICEPRINT_THRESHOLD);
+  // 介於中間：最像的陌生人＋0.05
+  const mid = core.normalize(cohort[0].map((x, i) => x * 0.6 + far[i]));
+  const m = Math.max(...cohort.map((c) => core.cosine(mid, c)));
+  assert.ok(m > 0.3 && m < 0.45, `中間 ${m}`);
+  assert.ok(Math.abs(core.personalThreshold({ reference: mid }) - (m + 0.05)) < 1e-9);
+  // 維度不同（換了模型、假聲紋）就不看比對群
+  assert.equal(core.personalThreshold({ reference: [1, 0, 0] }), core.VOICEPRINT_THRESHOLD);
+});
+
+test('依個人門檻：越用越準——放行滿 10 句後跟著最近分數的第 10 百分位 − 0.2 走，不滿 10 句不算', () => {
+  const ref = [1, 0, 0]; // 假聲紋：比對群不算，只看分數
+  assert.equal(core.personalThreshold({ reference: ref, scores: Array(9).fill(0.9) }), 0.3, '不滿 10 句');
+  assert.ok(Math.abs(core.personalThreshold({ reference: ref, scores: Array(10).fill(0.65) }) - 0.45) < 1e-9);
+  assert.equal(core.personalThreshold({ reference: ref, scores: Array(20).fill(0.9) }), 0.5, '上限 0.5');
+  assert.equal(core.personalThreshold({ reference: ref, scores: Array(20).fill(0.4) }), 0.3, '下限 0.3');
+  // 只看最近 50 句
+  assert.equal(core.personalThreshold({ reference: ref, scores: [...Array(60).fill(0.3), ...Array(50).fill(0.9)] }), 0.5);
+});
+
+test('createVoiceprint：一直很高分的人門檻往上追，擋得住聲音像的旁人；分數紀錄存檔讀回一樣；重錄歸零', () => {
+  const voice = voices(13);
+  const vp = core.createVoiceprint();
+  for (let i = 0; i < 4; i += 1) vp.judge(voice(0), 3);
+  assert.equal(vp.enrolled(), true);
+  assert.equal(vp.threshold(), 0.3);
+  // 本人一直講（高分），門檻升上去；聲音像的旁人（分數 0.4 上下）原本會過，之後被擋
+  const similar = core.normalize(voice(0).map((x, i) => x * 0.45 + (i === 1 ? 1 : 0)));
+  const sim = core.cosine(similar, vp.gate().reference);
+  assert.ok(sim > 0.3 && sim < 0.5, `像你的旁人 ${sim}`);
+  assert.equal(vp.judge(similar, 3, { dryRun: true }).pass, true, '一開始門檻 0.3：會過');
+  for (let i = 0; i < 12; i += 1) vp.judge(voice(0), 3);
+  assert.ok(vp.threshold() > sim, `用一陣子後門檻 ${vp.threshold()}`);
+  assert.equal(vp.gate().threshold, vp.threshold());
+  assert.equal(vp.judge(similar, 3, { dryRun: true }).pass, false, '之後擋掉');
+  const again = core.createVoiceprint({ state: JSON.parse(JSON.stringify(vp.state())) });
+  assert.equal(again.threshold(), vp.threshold());
+  vp.reset();
+  assert.equal(vp.threshold(), 0.3);
+  assert.deepEqual(vp.state().scores, []);
+});
+
+test('前端記樣本：門檻依個人調動了也算擋法變了（核心再送一次設定），分數紀錄跟著存檔', () => {
+  const voice = voices(17);
+  let saved = null;
+  const store = { load: () => saved, save: (s) => { saved = s; }, clear: () => { saved = null; } };
+  const remote = core.createRemoteVoiceprint({ store });
+  const turn = () => remote.transcription.onTurn({ type: 'voiceprint.turn', commit_event_id: 'c', pass: true, score: null, seconds: 3, embedding: voice(0) });
+  for (let i = 0; i < 4; i += 1) turn();
+  const before = remote.transcription.config().threshold;
+  let changes = 0;
+  for (let i = 0; i < 12; i += 1) if (turn()) changes += 1;
+  assert.ok(remote.transcription.config().threshold > before, '門檻升了');
+  assert.ok(changes >= 1);
+  assert.ok(saved.scores.length >= 10, '分數紀錄存檔');
+});

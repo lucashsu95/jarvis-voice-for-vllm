@@ -19,6 +19,6 @@ export { isSpeech, onlyFiller, withSpacing } from './text.mjs';
 export { readingOrder, ocrText, joinScreen } from './ocr.mjs';
 export { PROVIDERS, DEFAULT_MODELS, PROVIDER_NAMES, DEFAULT_URLS, ownKeyService } from './providers.mjs';
 export { hedge } from './hedge.mjs';
-export { createVoiceprint, createRemoteVoiceprint, passesGate, pickEnrollment, cosine, normalize, meanVector, VOICEPRINT_THRESHOLD, VOICEPRINT_MIN_SECONDS, VOICEPRINT_SHORT_THRESHOLD, ENROLL_SECONDS, REMOTE_VOICEPRINT_MODEL } from './voiceprint.mjs';
+export { createVoiceprint, createRemoteVoiceprint, passesGate, personalThreshold, defaultCohort, pickEnrollment, cosine, normalize, meanVector, VOICEPRINT_THRESHOLD, VOICEPRINT_THRESHOLD_CAP, VOICEPRINT_MIN_SECONDS, VOICEPRINT_SHORT_THRESHOLD, ENROLL_SECONDS, REMOTE_VOICEPRINT_MODEL } from './voiceprint.mjs';
 
 export const CORE_VERSION = '1.0.0';
