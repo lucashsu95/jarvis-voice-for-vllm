@@ -14,6 +14,8 @@ APP="${VOICE_DICTATION_APP:-$HOME/Applications/JarvisVoice.app}"
 AGENT="$HOME/Library/LaunchAgents/com.urusa.voice-dictation.plist"
 MODEL_NAME="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
 MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$MODEL_NAME.tar.bz2"
+# 人聲偵測（Silero VAD，約 0.6 MB）：把鍵盤聲、通知聲這類沒有人聲的聲音擋在轉寫前面
+VAD_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
 ENGINE="${1:-}"
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -65,6 +67,14 @@ if [[ "$ENGINE" == local ]]; then
     mkdir -p "$STATE/models"
     tar -xjf "$TMP/model.tar.bz2" -C "$STATE/models"
     [[ -f "$STATE/models/$MODEL_NAME/model.int8.onnx" ]] || fail "模型解開後找不到 model.int8.onnx。"
+  fi
+  # 人聲偵測模型：沒有才下載（很小）；下載失敗不擋安裝，只是鍵盤聲這類雜音會照舊送轉寫
+  if [[ -f "$STATE/models/silero_vad.onnx" ]]; then
+    note "人聲偵測模型 silero_vad.onnx 已經在了"
+  else
+    note "下載人聲偵測模型 silero_vad.onnx（約 0.6 MB，過濾鍵盤聲、通知聲）"
+    curl -fL --retry 3 --progress-bar -o "$STATE/models/silero_vad.onnx" "$VAD_MODEL_URL" \
+      || note "silero_vad.onnx 下載失敗：鍵盤聲這類雜音會照舊送轉寫，之後重跑 install.sh 再試"
   fi
 fi
 

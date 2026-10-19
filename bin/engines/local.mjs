@@ -1,11 +1,19 @@
 // 本機轉寫：sherpa-onnx 跑 SenseVoice-Small（普通話、英文、粵語、日文、韓文），聲音不離開這台電腦、不花錢。
 // 每句（listen.mjs 切好的）整句丟進去辨識，一句一句照順序出字。
+// 送辨識前先過一道 Silero VAD：沒有人聲的句子（鍵盤聲、通知聲這類）當雜音不送——
+// SenseVoice 對雜音會幻覺出「The.」「I.」這種單字，直接貼進輸入框。模型沒下載就不擋（照舊）。
 
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { STATE_DIR } from '../config.mjs';
 
 const require = createRequire(import.meta.url);
+
+const VAD_MODEL = join(STATE_DIR, 'models', 'silero_vad.onnx');
+const VAD_WINDOW = 512; // Silero 固定窗大小（16kHz 樣本數，32 ms）
+// 人聲窗佔比低於這個就判整句沒人聲。實錄：鍵盤聲 0.00、最短的真句（三字）0.35，中間留夠空間
+const NO_SPEECH_RATIO = 0.05;
 
 export function createLocalEngine({ model, language = 'auto', threads = 2, onFinal, onError, log }) {
   const modelFile = join(model, 'model.int8.onnx');
@@ -13,6 +21,7 @@ export function createLocalEngine({ model, language = 'auto', threads = 2, onFin
   let sherpa = null;
   let recognizer = null;
   let resampler = null;
+  let vad = null;
   let failed = '';
   try {
     if (!existsSync(modelFile) || !existsSync(tokens)) throw new Error(`找不到本機模型：${model}（重跑 install.sh 會下載）`);
@@ -31,6 +40,20 @@ export function createLocalEngine({ model, language = 'auto', threads = 2, onFin
     failed = err.message;
     log(failed);
     onError(failed);
+  }
+
+  if (recognizer) {
+    try {
+      if (!existsSync(VAD_MODEL)) log(`沒有人聲偵測模型：${VAD_MODEL}（重跑 install.sh 會下載），先不過濾非人聲的聲音`);
+      else vad = new sherpa.Vad({
+        sileroVad: { model: VAD_MODEL, threshold: 0.5, minSilenceDuration: 0.5, minSpeechDuration: 0.25, windowSize: VAD_WINDOW },
+        sampleRate: 16000,
+        numThreads: 1,
+      });
+    } catch (err) {
+      log(`人聲偵測模型載入失敗，先不過濾非人聲的聲音：${err.message}`);
+      vad = null;
+    }
   }
 
   let chunks = [];
@@ -55,6 +78,20 @@ export function createLocalEngine({ model, language = 'auto', threads = 2, onFin
     resampler ??= new sherpa.LinearResampler(24000, 16000);
     resampler.reset(); // 每句各自一段，不接上一句的尾巴
     return resampler.flush(f32);
+  };
+
+  // VAD 判定為人聲的窗佔比（16kHz 的 float）；沒有 VAD 回 1（不擋）
+  const speechRatio = (f16) => {
+    if (!vad) return 1;
+    vad.reset();
+    let speech = 0;
+    let total = 0;
+    for (let i = 0; i + VAD_WINDOW <= f16.length; i += VAD_WINDOW) {
+      vad.acceptWaveform(f16.slice(i, i + VAD_WINDOW));
+      total += 1;
+      if (vad.isDetected()) speech += 1;
+    }
+    return total ? speech / total : 0;
   };
 
   async function drain() {
@@ -96,7 +133,13 @@ export function createLocalEngine({ model, language = 'auto', threads = 2, onFin
         log(`這句只有 ${(whole.length / 48000).toFixed(2)} 秒，當雜音沒送辨識`);
         return;
       }
-      queue.push(to16k(whole));
+      const f16 = to16k(whole);
+      const ratio = speechRatio(f16);
+      if (ratio < NO_SPEECH_RATIO) {
+        log(`這句 ${(whole.length / 48000).toFixed(1)} 秒沒有人聲（VAD 人聲窗 ${ratio.toFixed(2)}），當雜音沒送辨識`);
+        return;
+      }
+      queue.push(f16);
       void drain();
     },
     flush() {},

@@ -3,8 +3,8 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
@@ -20,6 +20,16 @@ const { createBatchEngine, wavFromPcm16 } = await import('../bin/engines/batch.m
 const { createRealtimeEngine, openaiConnector } = await import('../bin/engines/realtime.mjs');
 const { createLocalEngine } = await import('../bin/engines/local.mjs');
 const { findFfmpeg, parseFrontAppInfo } = await import('../bin/common.mjs');
+
+// 人聲偵測模型：正式機上裝在 ~/.voice-dictation/models/，複製到測試的 STATE_DIR，
+// 讓本機辨識的測試走跟正式一樣的 VAD 過濾（沒裝就跳過相關測試）
+const realVadModel = join(homedir(), '.voice-dictation', 'models', 'silero_vad.onnx');
+let vadAvailable = false;
+if (existsSync(realVadModel)) {
+  mkdirSync(join(stateDir, 'models'), { recursive: true });
+  copyFileSync(realVadModel, join(stateDir, 'models', 'silero_vad.onnx'));
+  vadAvailable = true;
+}
 
 test('frontApp：lsappinfo 的舊格式（CFBundleIdentifier）和 macOS 27 新格式（bundleID）都要抓得出', () => {
   assert.deepEqual(parseFrontAppInfo('"CFBundleIdentifier"="com.google.Chrome"\n"pid"=1234'), { bundle: 'com.google.Chrome', pid: 1234 });
@@ -283,6 +293,23 @@ test('本機辨識：找不到模型時說要重跑 install.sh', () => {
   const errors = [];
   createLocalEngine({ model: join(stateDir, 'nope'), onFinal: () => {}, onError: (m) => errors.push(m), log: () => {} });
   assert.match(errors[0], /找不到本機模型/);
+});
+
+// 回歸：鍵盤聲、通知聲這類沒有人聲的聲音，以前會整句送 SenseVoice、幻覺出「The.」「I.」貼進輸入框。
+// 有 VAD 模型時要當雜音擋掉，一個字都不出。
+test('本機辨識：沒有人聲的純音調當雜音，不出字', { skip: (!existsSync(join(model, 'tokens.txt')) || !vadAvailable) && '沒裝本機模型或人聲偵測模型' }, async () => {
+  const n = 24000 * 3;
+  const tone = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i += 1) tone.writeInt16LE(Math.round(0.3 * 32768 * Math.sin((2 * Math.PI * 440 * i) / 24000)), i * 2);
+  const finals = [];
+  const logs = [];
+  const engine = createLocalEngine({ model, onFinal: (t) => finals.push(t), onError: () => {}, log: (m) => logs.push(String(m)) });
+  engine.append(tone);
+  engine.commit();
+  await new Promise((r) => setTimeout(r, 2000));
+  assert.equal(finals.length, 0);
+  assert.ok(logs.some((l) => l.includes('沒有人聲')));
+  engine.close();
 });
 
 test('哪些 app 收音：預設全部，開會的 app 和自己除外；也可以只指定幾個', () => {
