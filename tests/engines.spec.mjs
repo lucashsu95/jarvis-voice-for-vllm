@@ -34,6 +34,8 @@ if (existsSync(realVadModel)) {
 test('frontApp：lsappinfo 的舊格式（CFBundleIdentifier）和 macOS 27 新格式（bundleID）都要抓得出', () => {
   assert.deepEqual(parseFrontAppInfo('"CFBundleIdentifier"="com.google.Chrome"\n"pid"=1234'), { bundle: 'com.google.Chrome', pid: 1234 });
   assert.deepEqual(parseFrontAppInfo('bundleID="com.mitchellh.ghostty"\npid=5678'), { bundle: 'com.mitchellh.ghostty', pid: 5678 });
+  // 實測（macOS 27）：-only 格式的 pid 行是「pid = 70111 !cgsConnection …」，等號前後都有空格
+  assert.deepEqual(parseFrontAppInfo('bundleID="com.carriez.rustdesk"\npid = 70111 !cgsConnection !signalled'), { bundle: 'com.carriez.rustdesk', pid: 70111 });
   assert.deepEqual(parseFrontAppInfo(''), { bundle: '', pid: 0 });
 });
 
