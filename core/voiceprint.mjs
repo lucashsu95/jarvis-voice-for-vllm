@@ -11,9 +11,15 @@
 // 前端把 gate()（參考聲紋＋門檻）交給後端，後端每句照 passesGate 擋；每句的聲紋送回前端，由 createRemoteVoiceprint 記樣本、越用越準。
 // 計劃：CubeLV cubelv_docs/計劃/2026-10-19_只聽我的聲音_後端聲紋.md
 //
-// 門檻長句 0.3、短句 0.4（Mac 實際使用 10/19 下午：你的長句 32 句全部放行、最低 0.32；擋下 203 句裡 179 句不到 1 秒，多是雜音、呼吸）。
-//   10/19 試過放寬到 0.2／0.05：同一個收音環境、聲音像的旁人大多會過，改回。依個人往上調（比對群、你平常的分數）也試過，
-//   見 CubeLV cubelv_docs 計劃/2026-10-19_聲紋門檻依個人自動調.md。
+// 門檻長句 0.3、短句 0.4 打底，同一場講話裡跟著你的分數往上提（10/19，CubeLV cubelv_docs 計劃/2026-10-19_聲紋門檻依個人自動調.md）：
+//   - 同一場（10 分鐘內）放行的長句滿 3 句後，門檻＝最近 5 句分數的中位數 − 0.45，夾在 [0.3, 0.5]；短句門檻＝max(0.4, 這個門檻)。
+//     換了地方、隔了一陣子再講，頭幾句照樣用 0.3，換環境分數整段掉下來也不會被卡住。
+//   - 為什麼：同一場裡你的分數很穩（Mac 10/19 下午真的有字的長句 0.65～0.90、短句 0.58～0.79），聲音像你的旁人在 0.3～0.47，
+//     固定 0.3 擋不住；門檻跟著你這場的分數走就擋得住。
+//   - Mac 10/19 下午實際紀錄：放行的長句裡 0.32～0.40 那幾句、短句 0.40～0.50 那幾句轉出來都是空的（爆音、雜音），照這條會改成擋掉；有字的句子一句都不會多擋。
+//   - 箱子模擬（Mac 那批 10 段錄音，有內容的本人句子）：本人被擋不變（長句 2.8%，被擋的是很小聲含糊、夾店員聲音那幾句），
+//     雷軍講話中穿插劉德華、fangjun（同一批錄音條件、聲音像）通過 38.5% → 7.7%。
+//   - 10/19 也試過：放寬到 0.2／0.05（同場旁人大多會過）、依個人往上調（比對群、跨場次的分數，換場次本人被擋變多），都不採用。
 
 export const VOICEPRINT_THRESHOLD = 0.3;
 export const VOICEPRINT_MIN_SECONDS = 1.5; // 比這短的句子用 VOICEPRINT_SHORT_THRESHOLD
@@ -25,6 +31,11 @@ const ENROLL_CLUSTER = 0.45; // 錄樣本時，跟大多數句子像到這個程
 const ADAPT_MIN = 0.5; // 很確定是自己（而且 2 秒以上）的句子加進「最近的聲音」，聲音隨環境、時間變也跟得上
 const ADAPT_SECONDS = 2;
 const ADAPT_KEEP = 10;
+const SESSION_MS = 10 * 60 * 1000; // 同一場：最近 10 分鐘內放行的長句
+const SESSION_MIN = 3; // 滿這麼多句才跟著這場的分數走
+const SESSION_KEEP = 5; // 看最近這麼多句的中位數
+const SESSION_DELTA = 0.45; // 門檻＝中位數減這麼多
+const SESSION_CAP = 0.5;
 // 後端算聲紋用的模型（sherpa-onnx 3dspeaker_speech_campplus_sv_zh-cn_16k-common）：存檔記著，換了模型就重錄
 export const REMOTE_VOICEPRINT_MODEL = 'campplus-zh-cn-16k-common';
 
@@ -70,12 +81,22 @@ export function passesGate(gate, score, sec) {
   return score >= (sec < gate.minSeconds ? gate.shortThreshold : gate.threshold);
 }
 
-// state：{ enrolled: [聲紋], recent: [聲紋], pending: [{ v, sec }] }（存檔用，聲紋是一般陣列）
-export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD, minSeconds = VOICEPRINT_MIN_SECONDS, shortThreshold = VOICEPRINT_SHORT_THRESHOLD } = {}) {
+// state：{ enrolled: [聲紋], recent: [聲紋], pending: [{ v, sec }], session: [{ at, score }] }（存檔用，聲紋是一般陣列）
+// threshold、shortThreshold 是打底的門檻；這一場實際用多少看 threshold()、gate()。now 給測試換時鐘。
+export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD, minSeconds = VOICEPRINT_MIN_SECONDS, shortThreshold = VOICEPRINT_SHORT_THRESHOLD, now = () => Date.now() } = {}) {
   let enrolled = state.enrolled ?? [];
   let recent = state.recent ?? [];
   let pending = state.pending ?? [];
+  let session = state.session ?? [];
   let ref = null;
+  // 這一場的長句門檻：10 分鐘內放行的長句滿 3 句，最近 5 句的中位數 − 0.45，夾在 [threshold, 0.5]
+  const current = () => {
+    const t = now();
+    const scores = session.filter((x) => t - x.at <= SESSION_MS).slice(-SESSION_KEEP).map((x) => x.score).sort((a, b) => a - b);
+    if (scores.length < SESSION_MIN) return threshold;
+    return Math.min(Math.max(SESSION_CAP, threshold), Math.max(threshold, scores[Math.floor(scores.length / 2)] - SESSION_DELTA));
+  };
+  const currentShort = () => Math.max(shortThreshold, current());
   const refresh = () => {
     ref = meanVector([...enrolled.map((v) => ({ v, sec: 2 })), ...recent.map((v) => ({ v, sec: 1 }))]);
   };
@@ -93,8 +114,9 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
       if (dryRun) {
         if (!enrolled.length) return { pass: true, verdict: 'enrolling', score: null };
         const score = cosine(v, ref);
-        if (sec < minSeconds) return { pass: score >= shortThreshold, verdict: score >= shortThreshold ? 'short' : 'other', score };
-        return { pass: score >= threshold, verdict: score >= threshold ? 'mine' : 'other', score };
+        const th = sec < minSeconds ? currentShort() : current();
+        if (score < th) return { pass: false, verdict: 'other', score };
+        return { pass: true, verdict: sec < minSeconds ? 'short' : 'mine', score };
       }
       if (!enrolled.length) {
         if (sec >= ENROLL_MIN_TURN) pending.push({ v: Array.from(v), sec });
@@ -111,8 +133,10 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
         return { pass: true, verdict: 'enrolling', score: null };
       }
       const score = cosine(v, ref);
-      if (sec < minSeconds) return { pass: score >= shortThreshold, verdict: score >= shortThreshold ? 'short' : 'other', score };
-      if (score < threshold) return { pass: false, verdict: 'other', score };
+      if (sec < minSeconds) { const th = currentShort(); return { pass: score >= th, verdict: score >= th ? 'short' : 'other', score }; }
+      if (score < current()) return { pass: false, verdict: 'other', score };
+      // 這一場：放行的長句分數記下來，門檻跟著走
+      session = [...session.filter((x) => now() - x.at <= SESSION_MS), { at: now(), score: Math.round(score * 1e4) / 1e4 }].slice(-SESSION_KEEP);
       // 越用越準：很確定是自己的句子（2 秒以上、0.5 以上）加進「最近的聲音」。只收 0.5 以上：漏網的旁人（多在 0.3～0.46）不會混進來。
       if (score >= ADAPT_MIN && sec >= ADAPT_SECONDS) {
         recent = [...recent, Array.from(v)].slice(-ADAPT_KEEP);
@@ -120,17 +144,18 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
       }
       return { pass: true, verdict: 'mine', score };
     },
-    // 長句門檻
-    threshold: () => threshold,
-    // 給後端的擋法：參考聲紋（樣本＋最近的聲音的平均）與門檻；還在錄樣本是 null。參考聲紋變了才會換成新的陣列
-    gate: () => (enrolled.length ? { reference: ref, threshold, shortThreshold, minSeconds } : null),
+    // 這一場的長句門檻
+    threshold: current,
+    // 給後端的擋法：參考聲紋（樣本＋最近的聲音的平均）與這一場的門檻；還在錄樣本是 null。參考聲紋變了才會換成新的陣列
+    gate: () => (enrolled.length ? { reference: ref, threshold: current(), shortThreshold: currentShort(), minSeconds } : null),
     reset() {
       enrolled = [];
       recent = [];
       pending = [];
+      session = [];
       ref = null;
     },
-    state: () => ({ enrolled, recent, pending }),
+    state: () => ({ enrolled, recent, pending, session }),
   };
 }
 
@@ -148,7 +173,7 @@ export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) 
     try {
       store.save({
         model: REMOTE_VOICEPRINT_MODEL, at: Date.now(),
-        enrolled: s.enrolled.map(round), recent: s.recent.map(round), pending: s.pending.map((x) => ({ v: round(x.v), sec: x.sec })),
+        enrolled: s.enrolled.map(round), recent: s.recent.map(round), pending: s.pending.map((x) => ({ v: round(x.v), sec: x.sec })), session: s.session,
       });
     } catch { /* 存不進去：下次重錄 */ }
   };
@@ -169,7 +194,7 @@ export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) 
         clear();
         return true;
       },
-      // 一句的結果（後端放行或擋掉都會來）：有聲紋就記進樣本／最近的聲音。回傳 true＝擋法變了（剛錄好、最近的聲音更新）
+      // 一句的結果（後端放行或擋掉都會來）：有聲紋就記進樣本／最近的聲音／這一場的分數。回傳 true＝擋法變了（剛錄好、參考聲紋換新、這一場的門檻動了）
       onTurn(event) {
         const pass = event.pass !== false;
         if (!event.embedding?.length) {
@@ -178,11 +203,11 @@ export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) 
         }
         const wasEnrolled = vp.enrolled();
         const before = vp.gate();
+        const sessionBefore = vp.state().session;
         const r = vp.judge(normalize(event.embedding), event.seconds ?? 0);
         const after = vp.gate();
-        // 擋法變了：剛錄好、最近的聲音更新（參考聲紋換新）
-        const changed = after?.reference !== before?.reference;
-        if (!wasEnrolled || changed) save();
+        const changed = after?.reference !== before?.reference || after?.threshold !== before?.threshold || after?.shortThreshold !== before?.shortThreshold;
+        if (!wasEnrolled || changed || vp.state().session !== sessionBefore) save();
         onChange({ enrolled: vp.enrolled(), needSeconds: vp.needSeconds(), pass, verdict: pass ? r.verdict : 'other', score: event.score ?? r.score });
         return changed;
       },

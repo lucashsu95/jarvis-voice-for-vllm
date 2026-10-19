@@ -35,7 +35,7 @@ export function createVoiceprintFilter({ model, file, threshold, minSeconds, sho
       const s = vp.state();
       writeFileSync(tmp, JSON.stringify({
         model: VOICEPRINT_MODEL, at: Date.now(),
-        enrolled: s.enrolled.map(round), recent: s.recent.map(round), pending: s.pending.map((x) => ({ v: round(x.v), sec: x.sec })),
+        enrolled: s.enrolled.map(round), recent: s.recent.map(round), pending: s.pending.map((x) => ({ v: round(x.v), sec: x.sec })), session: s.session,
       }));
       chmodSync(tmp, 0o600);
       renameSync(tmp, file);
@@ -66,7 +66,7 @@ export function createVoiceprintFilter({ model, file, threshold, minSeconds, sho
   return {
     enrolled: () => vp.enrolled(),
     needSeconds: () => vp.needSeconds(),
-    // 長句門檻
+    // 這一場的長句門檻（同一場跟著你的分數往上提，核心 voiceprint.mjs）
     threshold: () => vp.threshold(),
     // 一句講完：回傳 { pass, verdict, score, ms, v }。算不出來（太短）就放行。
     // dryRun：講到一半停頓時先比一下（不記進樣本），之後同一句講完用 commit(v, sec) 記

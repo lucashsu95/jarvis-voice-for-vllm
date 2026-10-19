@@ -216,44 +216,67 @@ test('前端記樣本：後端送回來的聲紋湊滿樣本就存檔、擋法�
   assert.equal(remote.enrolled(), false);
 });
 
-// 門檻（計劃 cubelv_docs 2026-10-19_聲紋門檻依個人自動調.md）：長句 0.3、短句 0.4，不依個人調
-test('門檻：長句 0.3、短句 0.4；用多久都不會變', () => {
-  assert.equal(core.VOICEPRINT_THRESHOLD, 0.3);
-  assert.equal(core.VOICEPRINT_SHORT_THRESHOLD, 0.4);
-  const voice = voices(13);
-  const vp = core.createVoiceprint();
-  for (let i = 0; i < 4; i += 1) vp.judge(voice(0), 3);
-  assert.equal(vp.enrolled(), true);
-  // 跟參考聲紋相似度剛好是 s 的聲紋
+// 門檻（計劃 cubelv_docs 2026-10-19_聲紋門檻依個人自動調.md）：長句 0.3、短句 0.4 打底，同一場跟著你的分數往上提
+// 跟參考聲紋相似度剛好是 s 的聲紋
+function scorer(vp, voice) {
   const ref = vp.gate().reference;
   const v1 = voice(1);
   const orth = core.normalize(v1.map((x, i) => x - core.cosine(v1, ref) * ref[i]));
-  const at = (s) => core.normalize(ref.map((x, i) => s * x + Math.sqrt(1 - s * s) * orth[i]));
-  assert.equal(vp.judge(at(0.33), 3, { dryRun: true }).pass, true, '0.33：放行');
-  assert.equal(vp.judge(at(0.27), 3, { dryRun: true }).pass, false, '0.27：擋');
-  assert.equal(vp.judge(at(0.43), 1, { dryRun: true }).pass, true, '短句 0.43：放行');
-  assert.equal(vp.judge(at(0.36), 1, { dryRun: true }).pass, false, '短句 0.36：擋');
-  // 用一陣子門檻不變；存檔沒有分數紀錄
-  for (let i = 0; i < 20; i += 1) vp.judge(voice(0), 3);
+  return (s) => core.normalize(ref.map((x, i) => s * x + Math.sqrt(1 - s * s) * orth[i]));
+}
+
+test('門檻：打底 0.3／0.4；同一場放行的長句滿 3 句後＝最近 5 句中位數 − 0.45（最高 0.5），短句跟著；10 分鐘沒講回到打底', () => {
+  assert.equal(core.VOICEPRINT_THRESHOLD, 0.3);
+  assert.equal(core.VOICEPRINT_SHORT_THRESHOLD, 0.4);
+  let t = 0;
+  const voice = voices(13);
+  const vp = core.createVoiceprint({ now: () => t });
+  for (let i = 0; i < 4; i += 1) vp.judge(voice(0), 3);
+  assert.equal(vp.enrolled(), true);
   assert.equal(vp.threshold(), 0.3);
-  assert.deepEqual({ threshold: vp.gate().threshold, shortThreshold: vp.gate().shortThreshold }, { threshold: 0.3, shortThreshold: 0.4 });
-  assert.deepEqual(Object.keys(vp.state()).sort(), ['enrolled', 'pending', 'recent']);
+  const at = scorer(vp, voice);
+  assert.equal(vp.judge(at(0.42), 3, { dryRun: true }).pass, true, '聲音像你的旁人 0.42：一開始會過');
+  // 你講了兩句還不算（1.8 秒：長句，但不到 2 秒不加進最近的聲音，參考聲紋不變）
+  for (let i = 0; i < 2; i += 1) { t += 20000; assert.equal(vp.judge(at(0.9), 1.8).pass, true); }
+  assert.equal(vp.threshold(), 0.3);
+  t += 20000;
+  vp.judge(at(0.9), 1.8);
+  assert.ok(Math.abs(vp.threshold() - 0.45) < 1e-9, `第三句後 ${vp.threshold()}`);
+  assert.deepEqual({ th: vp.gate().threshold, short: vp.gate().shortThreshold }, { th: vp.threshold(), short: vp.threshold() });
+  assert.equal(vp.judge(at(0.42), 3, { dryRun: true }).pass, false, '旁人 0.42 長句：擋');
+  assert.equal(vp.judge(at(0.42), 1, { dryRun: true }).pass, false, '旁人 0.42 短句：擋');
+  assert.equal(vp.judge(at(0.5), 1, { dryRun: true }).pass, true);
+  // 不像的句子不記進這一場
+  vp.judge(at(0.1), 3);
+  assert.equal(vp.state().session.length, 3);
+  // 存檔讀回一樣
+  const again = core.createVoiceprint({ state: JSON.parse(JSON.stringify(vp.state())), now: () => t });
+  assert.equal(again.threshold(), vp.threshold());
+  // 最高 0.5
+  for (let i = 0; i < 3; i += 1) { t += 20000; vp.judge(at(0.99), 1.8); }
+  assert.equal(vp.threshold(), 0.5);
+  // 10 分鐘沒講：回到打底（換了地方分數整段掉下來也不會被卡住）
+  t += 11 * 60 * 1000;
+  assert.equal(vp.threshold(), 0.3);
+  assert.equal(vp.judge(at(0.32), 3).pass, true);
+  vp.reset();
+  assert.deepEqual(vp.state().session, []);
 });
 
-test('前端記樣本：只有參考聲紋換新才算擋法變了，存檔不帶分數紀錄', () => {
+test('前端記樣本：這一場的門檻動了也算擋法變了（核心再送一次設定），這一場的分數跟著存檔', () => {
+  let t = 0;
   const voice = voices(17);
   let saved = null;
-  let saves = 0;
-  const store = { load: () => saved, save: (s) => { saved = s; saves += 1; }, clear: () => { saved = null; } };
-  const remote = core.createRemoteVoiceprint({ store });
-  const turn = (sec = 3) => remote.transcription.onTurn({ type: 'voiceprint.turn', commit_event_id: 'c', pass: true, score: null, seconds: sec, embedding: voice(0) });
-  for (let i = 0; i < 4; i += 1) turn();
-  assert.equal(remote.enrolled(), true);
+  const store = { load: () => saved, save: (s) => { saved = s; }, clear: () => { saved = null; } };
+  const remote = core.createRemoteVoiceprint({ store, now: () => t });
+  const turn = (sec) => { t += 20000; return remote.transcription.onTurn({ type: 'voiceprint.turn', commit_event_id: 'c', pass: true, score: null, seconds: sec, embedding: voice(0) }); };
+  for (let i = 0; i < 4; i += 1) turn(3);
   assert.equal(remote.transcription.config().threshold, 0.3);
-  const before = saves;
-  assert.equal(turn(1), false, '短句不加進最近的聲音：擋法不變、不存檔');
-  assert.equal(saves, before);
-  assert.equal(turn(3), true, '很確定是你的長句：參考聲紋換新');
-  assert.equal(saves, before + 1);
-  assert.equal('scores' in saved, false);
+  assert.equal(turn(1), false, '短句不算進這一場：擋法不變');
+  assert.equal(turn(1.8), false);
+  assert.equal(turn(1.8), false);
+  assert.equal(saved.session.length, 2, '這一場的分數存檔');
+  assert.equal(turn(1.8), true, '第三句：門檻往上提，擋法要再送');
+  assert.ok(remote.transcription.config().threshold > 0.45, `${remote.transcription.config().threshold}`);
+  assert.equal(saved.session.length, 3);
 });

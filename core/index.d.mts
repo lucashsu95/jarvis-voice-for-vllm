@@ -221,7 +221,7 @@ export const REMOTE_VOICEPRINT_MODEL: string;
 /** 給後端的擋法：參考聲紋與門檻（短於 minSeconds 用 shortThreshold） */
 export interface VoiceprintGate { reference: number[]; threshold: number; shortThreshold: number; minSeconds: number }
 export function passesGate(gate: VoiceprintGate | null, score: number | null | undefined, sec: number): boolean;
-export interface VoiceprintSaved { model: string; at: number; enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] }
+export interface VoiceprintSaved { model: string; at: number; enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[]; session?: { at: number; score: number }[] }
 export interface VoiceprintChange { enrolled: boolean; needSeconds: number; pass: boolean; verdict: VoiceprintVerdict['verdict']; score: number | null }
 export function createRemoteVoiceprint(opts: {
   store: { load(): VoiceprintSaved | null; save(saved: VoiceprintSaved): void; clear(): void };
@@ -229,15 +229,15 @@ export function createRemoteVoiceprint(opts: {
   threshold?: number; minSeconds?: number; shortThreshold?: number;
 }): { enrolled(): boolean; needSeconds(): number; reset(): void; transcription: TranscriptionVoiceprint };
 export interface VoiceprintVerdict { pass: boolean; verdict: 'enrolling' | 'enrolled' | 'short' | 'mine' | 'other'; score: number | null; kept?: number }
-export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[] }; threshold?: number; minSeconds?: number; shortThreshold?: number }): {
+export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[]; session?: { at: number; score: number }[] }; threshold?: number; minSeconds?: number; shortThreshold?: number; now?: () => number }): {
   enrolled(): boolean;
   needSeconds(): number;
   judge(v: ArrayLike<number>, sec: number, opts?: { dryRun?: boolean }): VoiceprintVerdict;
-  /** 長句門檻 */
+  /** 這一場的長句門檻（同一場放行的長句滿 3 句後跟著分數往上提） */
   threshold(): number;
   gate(): VoiceprintGate | null;
   reset(): void;
-  state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] };
+  state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[]; session: { at: number; score: number }[] };
 };
 export function pickEnrollment<T extends { v: ArrayLike<number>; sec: number }>(items: T[]): T[];
 export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number;
