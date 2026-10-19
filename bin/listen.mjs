@@ -445,7 +445,7 @@ function judgeTurn(sec, v = null) {
     log(`聲紋樣本錄好了（留下 ${r.kept} 句）：之後不像你的聲音不轉寫`);
     announceSettings();
   } else if (r.verdict === 'other') log(`聲紋不像你（相似度 ${r.score.toFixed(2)}，${sec.toFixed(1)} 秒，${r.ms} ms）：這句不轉寫`);
-  else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '短句，用寬的門檻算你' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
+  else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '短句，是你' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
   if (r.pass) lastSpeaker = r.verdict === 'enrolled' ? 'mine' : r.verdict;
   return r;
 }

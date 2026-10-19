@@ -50,8 +50,8 @@
 //   "voiceprint": {                    // 只聽我的聲音：本機聲紋（sherpa-onnx CAM++），不像你的句子不轉寫、不貼（選單可以切）
 //     "enabled": false,                // 第一次開會從你接下來講的 10 秒錄樣本（照常轉寫）；選單「重錄我的聲紋」重來
 //     "threshold": 0.3,                // 跟你的聲紋相似度低於這個就不要（實測別人最高 0.27）
-//     "minSeconds": 1.5,               // 比這短的句子判斷不準，改用寬的門檻 shortThreshold
-//     "shortThreshold": 0.1            // 短句的門檻（實測別人的短句擋下約 8 成、你的被擋 7～11%）
+//     "minSeconds": 1.5,               // 比這短的句子另外用 shortThreshold
+//     "shortThreshold": 0.4            // 短句的門檻（咖啡店實測：你的短句 0.75 以上，別人的短句、雜音 0.20～0.31）
 //   }
 // }
 
@@ -114,7 +114,7 @@ export function defaults() {
     commands: true,
     jev: { apiKey: '', apiKeyFile: '', apiKeyCommand: '', model: 'jev-latest' },
     speed: { earlyTranscribeMs: 400, pasteAfterMs: 1200, hedge: 2, preview: true, bubble: true, warm: true },
-    voiceprint: { enabled: false, threshold: 0.3, minSeconds: 1.5, shortThreshold: 0.1 },
+    voiceprint: { enabled: false, threshold: 0.3, minSeconds: 1.5, shortThreshold: 0.4 },
   };
 }
 
