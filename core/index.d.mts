@@ -218,16 +218,10 @@ export const VOICEPRINT_MIN_SECONDS: number;
 export const VOICEPRINT_SHORT_THRESHOLD: number;
 export const ENROLL_SECONDS: number;
 export const REMOTE_VOICEPRINT_MODEL: string;
-/** 長句門檻依個人調的上限（下限是 VOICEPRINT_THRESHOLD） */
-export const VOICEPRINT_THRESHOLD_CAP: number;
-/** 比對群（252 位陌生人的平均聲紋，CAM++ zh-cn） */
-export function defaultCohort(): number[][];
-/** 這個人的長句門檻：最像他的陌生人＋0.05、最近放行分數的第 10 百分位 − 0.2，取高的，夾在 [floor, cap] */
-export function personalThreshold(opts: { reference: ArrayLike<number> | null; scores?: number[]; cohort?: number[][]; floor?: number; cap?: number }): number;
 /** 給後端的擋法：參考聲紋與門檻（短於 minSeconds 用 shortThreshold） */
 export interface VoiceprintGate { reference: number[]; threshold: number; shortThreshold: number; minSeconds: number }
 export function passesGate(gate: VoiceprintGate | null, score: number | null | undefined, sec: number): boolean;
-export interface VoiceprintSaved { model: string; at: number; enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[]; scores?: number[] }
+export interface VoiceprintSaved { model: string; at: number; enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] }
 export interface VoiceprintChange { enrolled: boolean; needSeconds: number; pass: boolean; verdict: VoiceprintVerdict['verdict']; score: number | null }
 export function createRemoteVoiceprint(opts: {
   store: { load(): VoiceprintSaved | null; save(saved: VoiceprintSaved): void; clear(): void };
@@ -235,15 +229,15 @@ export function createRemoteVoiceprint(opts: {
   threshold?: number; minSeconds?: number; shortThreshold?: number;
 }): { enrolled(): boolean; needSeconds(): number; reset(): void; transcription: TranscriptionVoiceprint };
 export interface VoiceprintVerdict { pass: boolean; verdict: 'enrolling' | 'enrolled' | 'short' | 'mine' | 'other'; score: number | null; kept?: number }
-export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[]; scores?: number[] }; threshold?: number; minSeconds?: number; shortThreshold?: number; cohort?: number[][] }): {
+export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[] }; threshold?: number; minSeconds?: number; shortThreshold?: number }): {
   enrolled(): boolean;
   needSeconds(): number;
   judge(v: ArrayLike<number>, sec: number, opts?: { dryRun?: boolean }): VoiceprintVerdict;
-  /** 現在的長句門檻（依個人調過） */
+  /** 長句門檻 */
   threshold(): number;
   gate(): VoiceprintGate | null;
   reset(): void;
-  state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[]; scores: number[] };
+  state(): { enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[] };
 };
 export function pickEnrollment<T extends { v: ArrayLike<number>; sec: number }>(items: T[]): T[];
 export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number;
