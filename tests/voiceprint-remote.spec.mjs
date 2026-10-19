@@ -216,10 +216,10 @@ test('前端記樣本：後端送回來的聲紋湊滿樣本就存檔、擋法�
   assert.equal(remote.enrolled(), false);
 });
 
-// 門檻（計劃 cubelv_docs 2026-10-19_聲紋門檻依個人自動調.md）：本人被擋 1% 以下優先，長句 0.2、短句 0.05，不依個人往上調
-test('門檻：長句 0.2、短句 0.05——本人換了場次分數掉到 0.2 多照樣放行，跟你不像的擋掉；用多久都不會往上調', () => {
-  assert.equal(core.VOICEPRINT_THRESHOLD, 0.2);
-  assert.equal(core.VOICEPRINT_SHORT_THRESHOLD, 0.05);
+// 門檻（計劃 cubelv_docs 2026-10-19_聲紋門檻依個人自動調.md）：長句 0.3、短句 0.4，不依個人調
+test('門檻：長句 0.3、短句 0.4；用多久都不會變', () => {
+  assert.equal(core.VOICEPRINT_THRESHOLD, 0.3);
+  assert.equal(core.VOICEPRINT_SHORT_THRESHOLD, 0.4);
   const voice = voices(13);
   const vp = core.createVoiceprint();
   for (let i = 0; i < 4; i += 1) vp.judge(voice(0), 3);
@@ -229,14 +229,14 @@ test('門檻：長句 0.2、短句 0.05——本人換了場次分數掉到 0.2 
   const v1 = voice(1);
   const orth = core.normalize(v1.map((x, i) => x - core.cosine(v1, ref) * ref[i]));
   const at = (s) => core.normalize(ref.map((x, i) => s * x + Math.sqrt(1 - s * s) * orth[i]));
-  assert.equal(vp.judge(at(0.24), 3, { dryRun: true }).pass, true, '換場次的本人 0.24：放行');
-  assert.equal(vp.judge(at(0.16), 3, { dryRun: true }).pass, false, '0.16：擋');
-  assert.equal(vp.judge(at(0.08), 1, { dryRun: true }).pass, true, '短句 0.08：放行');
-  assert.equal(vp.judge(at(0.02), 1, { dryRun: true }).pass, false, '短句 0.02：擋');
+  assert.equal(vp.judge(at(0.33), 3, { dryRun: true }).pass, true, '0.33：放行');
+  assert.equal(vp.judge(at(0.27), 3, { dryRun: true }).pass, false, '0.27：擋');
+  assert.equal(vp.judge(at(0.43), 1, { dryRun: true }).pass, true, '短句 0.43：放行');
+  assert.equal(vp.judge(at(0.36), 1, { dryRun: true }).pass, false, '短句 0.36：擋');
   // 用一陣子門檻不變；存檔沒有分數紀錄
   for (let i = 0; i < 20; i += 1) vp.judge(voice(0), 3);
-  assert.equal(vp.threshold(), 0.2);
-  assert.deepEqual({ threshold: vp.gate().threshold, shortThreshold: vp.gate().shortThreshold }, { threshold: 0.2, shortThreshold: 0.05 });
+  assert.equal(vp.threshold(), 0.3);
+  assert.deepEqual({ threshold: vp.gate().threshold, shortThreshold: vp.gate().shortThreshold }, { threshold: 0.3, shortThreshold: 0.4 });
   assert.deepEqual(Object.keys(vp.state()).sort(), ['enrolled', 'pending', 'recent']);
 });
 
@@ -249,7 +249,7 @@ test('前端記樣本：只有參考聲紋換新才算擋法變了，存檔不�
   const turn = (sec = 3) => remote.transcription.onTurn({ type: 'voiceprint.turn', commit_event_id: 'c', pass: true, score: null, seconds: sec, embedding: voice(0) });
   for (let i = 0; i < 4; i += 1) turn();
   assert.equal(remote.enrolled(), true);
-  assert.equal(remote.transcription.config().threshold, 0.2);
+  assert.equal(remote.transcription.config().threshold, 0.3);
   const before = saves;
   assert.equal(turn(1), false, '短句不加進最近的聲音：擋法不變、不存檔');
   assert.equal(saves, before);

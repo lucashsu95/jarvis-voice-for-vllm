@@ -11,17 +11,13 @@
 // 前端把 gate()（參考聲紋＋門檻）交給後端，後端每句照 passesGate 擋；每句的聲紋送回前端，由 createRemoteVoiceprint 記樣本、越用越準。
 // 計劃：CubeLV cubelv_docs/計劃/2026-10-19_只聽我的聲音_後端聲紋.md
 //
-// 門檻（10/19 驗證，CubeLV cubelv_docs 計劃/2026-10-19_聲紋門檻依個人自動調.md）：user 要「本人被擋 1% 以下，陌生人可以多放一點」。
-//   照錄音先後模擬錄好樣本後每天用（Mac 使用者 10 段錄音、有內容的 198 句；AISHELL 251 位沒見過的陌生人；中間穿插旁人講話）：
-//   - 長句 0.2：本人被擋 0.4%，陌生人通過 0.1%。0.25 就開始擋到本人真的講的話（1.4%），0.3 是 2.8%。
-//   - 短句 0.05（把本人的句子切成 1 秒當短句）：本人被擋 0.7%，陌生人的 1 秒片段通過 3.8%；0.1 是 1.6%／1.0%，原本的 0.4 是 22%。
-//   - 代價：聲音很像你的人會過（雷軍當本人時劉德華全過）；咖啡店裡別人很短的話、雜音（0.20～0.31）也會過。
-//   - 「依個人往上調門檻」（最像你的陌生人、你平常的分數）會讓本人被擋升到 6% 以上，跟這個目標相反，不做。
-//   - 本人分數最低的那些「句子」多半不是本人在講話：語助詞與雜音（「嗯」「H.」）、影片或旁人（0.00～0.11）、跟店員對話夾著店員的聲音。
+// 門檻長句 0.3、短句 0.4（Mac 實際使用 10/19 下午：你的長句 32 句全部放行、最低 0.32；擋下 203 句裡 179 句不到 1 秒，多是雜音、呼吸）。
+//   10/19 試過放寬到 0.2／0.05：同一個收音環境、聲音像的旁人大多會過，改回。依個人往上調（比對群、你平常的分數）也試過，
+//   見 CubeLV cubelv_docs 計劃/2026-10-19_聲紋門檻依個人自動調.md。
 
-export const VOICEPRINT_THRESHOLD = 0.2;
+export const VOICEPRINT_THRESHOLD = 0.3;
 export const VOICEPRINT_MIN_SECONDS = 1.5; // 比這短的句子用 VOICEPRINT_SHORT_THRESHOLD
-export const VOICEPRINT_SHORT_THRESHOLD = 0.05;
+export const VOICEPRINT_SHORT_THRESHOLD = 0.4;
 // 錄樣本要收到這麼多秒的講話：實測 3 秒自己被擋 19%、5～10 秒約 1 成、10 秒以上沒有再變好
 export const ENROLL_SECONDS = 10;
 const ENROLL_MIN_TURN = 1; // 錄樣本只收 1 秒以上的句子
@@ -117,7 +113,7 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
       const score = cosine(v, ref);
       if (sec < minSeconds) return { pass: score >= shortThreshold, verdict: score >= shortThreshold ? 'short' : 'other', score };
       if (score < threshold) return { pass: false, verdict: 'other', score };
-      // 越用越準：很確定是自己的句子（2 秒以上、0.5 以上）加進「最近的聲音」。只收 0.5 以上：漏網的旁人（多在 0.2～0.46）不會混進來。
+      // 越用越準：很確定是自己的句子（2 秒以上、0.5 以上）加進「最近的聲音」。只收 0.5 以上：漏網的旁人（多在 0.3～0.46）不會混進來。
       if (score >= ADAPT_MIN && sec >= ADAPT_SECONDS) {
         recent = [...recent, Array.from(v)].slice(-ADAPT_KEEP);
         refresh();
