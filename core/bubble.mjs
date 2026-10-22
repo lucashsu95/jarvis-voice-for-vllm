@@ -1,0 +1,78 @@
+// JarvisVoice 核心：講話時那個小框（Mac 是游標旁的小框，CubeLV 是頂端的 toast）有哪些階段、寫什麼字、停多久。
+// 各 App 只負責畫：bubbleContent 回 { title, body, tone, loud, busy, result, holdMs }。
+// 階段（state）：
+//   hearing：講話中，text 是聽到的字；speaker 是聲紋比對（mine 你說的、short 短句、enrolling 正在錄你的聲紋），
+//            enrollSeconds 是還要講多久才錄好聲紋；
+//   ignored：聲紋不像你、這句不轉寫（text 是預覽聽到的字）；working：整理中（text 是轉寫原稿）；pasted：已貼上；
+//   command：語音指令（text 是目標，detail 是做到哪一步，見 stepText）；done：指令完成；failed：指令沒完成（detail 是原因）；
+//   nofield：沒有輸入框、這段沒貼上（detail 是 App 給的補充，例如 Mac 的「複製上一句」）；error：出錯（text 是原因）；hide：收起來。
+// tone：blue 聽著／整理中、green 已貼上／完成、orange 沒貼上／沒完成、red 出錯（Mac 畫成左邊的色條）。
+// loud：標題要醒目（沒貼上、沒完成、出錯）；busy：標題旁轉一個小圈；result：結果（放游標上面、寬度重新量）；
+// holdMs：顯示多久就收（null＝一直留著，聽著、整理中、指令做到一半；App 自己在很久沒新消息時收）。
+// lang：zh（台灣正體）、en、ja；認不得的用 en。
+
+export const BUBBLE_HOLD_MS = { pasted: 1400, done: 1800, ignored: 2500, nofield: 3000, failed: 3500, error: 4000 };
+export const BUBBLE_MAX_CHARS = 84; // 內文最多三行：一行約 30 個中文字，只留最後這麼多字，最新的字才一定看得到
+
+const TEXT = {
+  listening: ['聽著…', 'Listening…', '聞き取り中…'],
+  heard: ['聽到', 'Hearing', '聞き取り'],
+  mine: ['你說的', 'You said', 'あなたの声'],
+  short: ['你說的（短句）', 'You said (short)', 'あなたの声（短い文）'],
+  enrolling: ['聽到（正在錄你的聲紋）', 'Heard (learning your voice)', '聞き取り（声紋を登録中）'],
+  enrollNeed: ['建立你的聲紋中，再正常講約 {n} 秒', 'Learning your voice: keep talking normally for about {n} more seconds', '声紋を登録中：あと約 {n} 秒ふつうに話してください'],
+  ignored: ['別人在講話，這句不轉寫', 'Someone else is talking; not transcribed', 'ほかの人の声なので文字にしません'],
+  working: ['整理中', 'Cleaning up', '整理中'],
+  pasted: ['已貼上', 'Pasted', '貼り付けました'],
+  command: ['語音指令', 'Voice command', '音声コマンド'],
+  done: ['指令完成', 'Command done', 'コマンド完了'],
+  failed: ['指令沒完成', 'Command not done', 'コマンド未完了'],
+  nofield: ['游標不在輸入框，這段沒貼上', 'Not in a text field; nothing was pasted', '入力欄にカーソルがないため貼り付けていません'],
+  error: ['出錯了', 'Something went wrong', 'エラーが発生しました'],
+  step: ['第 {n} 步：', 'Step {n}: ', 'ステップ {n}：'],
+};
+const VERBS = {
+  click: ['點', 'click', 'クリック'],
+  fill: ['填字到', 'type into', '入力'],
+  enter: ['按 Enter', 'press Enter', 'Enter を押す'],
+  write: ['寫訊息', 'write the message', 'メッセージを書く'],
+  done: ['完成', 'done', '完了'],
+  stuck: ['做不到', 'can’t do it', 'できません'],
+};
+
+const index = (lang) => (/^zh/i.test(lang ?? '') ? 0 : /^ja/i.test(lang ?? '') ? 2 : 1);
+const pick = (row, lang, n) => row[index(lang)].replace('{n}', String(n ?? ''));
+
+export const clipHead = (text, max = BUBBLE_MAX_CHARS) => (text.length > max ? `…${text.slice(-max)}` : text);
+
+// 指令做到哪一步（小框 command 的 detail）：runCommand 的 onStep({ n, action, target }) → 「第 1 步：點 按鈕「Gmail」（上左）」
+export function stepText({ n, action, target = '' }, lang = 'zh') {
+  const verb = VERBS[action] ? pick(VERBS[action], lang) : action;
+  return `${pick(TEXT.step, lang, n)}${verb}${target ? ` ${target}` : ''}`;
+}
+
+export function bubbleContent(e, lang = 'zh') {
+  const t = (key) => pick(TEXT[key], lang);
+  const lines = (...parts) => parts.filter(Boolean).join('\n');
+  const out = (title, body, tone, extra = {}) => ({
+    title, body: body ? clipHead(body) : '', tone, loud: false, busy: false, result: false, holdMs: BUBBLE_HOLD_MS[e.state] ?? null, ...extra,
+  });
+  switch (e.state) {
+    case 'hearing': {
+      // 還在錄聲紋樣本：多一行說還要講多久。小標籤寫是誰講的（開了「只聽我的聲音」、這句比過聲紋才有）
+      const need = e.enrollSeconds > 0 ? pick(TEXT.enrollNeed, lang, Math.ceil(e.enrollSeconds)) : '';
+      if (!e.text) return out(t('listening'), need, 'blue');
+      const who = { mine: 'mine', short: 'short', enrolling: 'enrolling' }[e.speaker];
+      return out(t(who ?? 'heard'), lines(e.text, need), 'blue');
+    }
+    case 'ignored': return out(t('ignored'), e.text, 'orange', { loud: true });
+    case 'working': return out(t('working'), e.text, 'blue', { busy: true });
+    case 'pasted': return out(t('pasted'), '', 'green', { result: true });
+    case 'command': return out(t('command'), lines(e.text, e.detail), 'blue', { busy: true });
+    case 'done': return out(t('done'), e.text, 'green', { result: true });
+    case 'failed': return out(t('failed'), lines(e.text, e.detail), 'orange', { loud: true });
+    case 'nofield': return out(t('nofield'), e.detail, 'orange', { loud: true });
+    case 'error': return out(t('error'), e.text, 'red', { loud: true });
+    default: return null;
+  }
+}

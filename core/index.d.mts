@@ -42,8 +42,12 @@ export const IN_FIELD_SURE: number;
 export const IN_FIELD_NAMED: number;
 
 export interface CommandResult { ok: boolean; reason?: string; steps?: string[] }
+export interface CommandStep { n: number; action: string; target: string }
+export const MAX_COMMAND_STEPS: number;
+export function goalReached(goal: string, title: string, startTitle: string, doneSteps: number): boolean;
 export function runCommand(input: { screen: ScreenAdapter; decider: Decider; log?: (m: string) => void; switchApp?: (name: string) => Promise<boolean>;
-  goal: string; text?: string; message?: string; app?: string; context?: { app?: string }; stopped?: () => boolean }): Promise<CommandResult>;
+  goal: string; text?: string; message?: string; app?: string; context?: { app?: string }; stopped?: () => boolean;
+  onStep?: (step: CommandStep) => void; maxSteps?: number }): Promise<CommandResult>;
 export function messageBox(list: ScreenElement[], searchText?: string): ScreenElement | null;
 
 export function rankTargets(input: { candidates: ScreenElement[]; window?: Frame; remembered?: { role: string; label?: string } | null }):
@@ -243,3 +247,59 @@ export function pickEnrollment<T extends { v: ArrayLike<number>; sec: number }>(
 export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number;
 export function normalize(v: ArrayLike<number>): number[];
 export function meanVector(items: { v: ArrayLike<number>; sec?: number }[]): number[] | null;
+
+// ---- 一段話講完之後怎麼處理（flow.mjs）----
+export const NOT_IN_FIELD_SURE: number;
+export interface InFieldJudgement { command: number; named: ScreenElement | null; isCommand: boolean; source?: string }
+export function judgeInField(input: { raw: string; screen: ScreenAdapter; decider: Decider; field?: { label?: string; role?: string };
+  context?: { app?: string; window?: string } }): Promise<InFieldJudgement>;
+export type JudgedUtterance = (EditResult & { model?: string }) | { failed: string } | null;
+export function judgeUtterance(input: { raw: string; inField: boolean; edit: (transcript: string) => Promise<EditResult>;
+  judge?: Promise<InFieldJudgement | null> | null; intent?: Promise<number | null> | null; aborted?: () => boolean; log?: (m: string) => void }): Promise<JudgedUtterance>;
+export type OutputPlan =
+  | { kind: 'command'; result: EditResult }
+  | { kind: 'delete_last' }
+  | { kind: 'revert_last' }
+  | { kind: 'filler' }
+  | { kind: 'write'; text: string; mode: EditMode; ai: boolean; failed?: string; result?: EditResult | null };
+export function planOutput(input: { raw: string; result: JudgedUtterance | undefined }): OutputPlan;
+export function pickTarget(input: { candidates: ScreenElement[]; window?: Frame | null; remembered?: { role: string; label?: string; frame?: { y: number } } | null;
+  transcript?: string; decider?: Decider | null; context?: { app?: string }; log?: (m: string) => void }): Promise<{ choice: ScreenElement; reason: string } | null>;
+
+// ---- 一直收音時幾句合成一段（segment.mjs）----
+export const SEGMENT_PAUSE_MS: number;
+export const PASTE_AFTER_MS: number;
+export const MAX_SEGMENT_CHARS: number;
+export interface Segmenter<H = unknown, P = unknown> {
+  add(text: string, heard?: H): void;
+  check(): void;
+  force(): void;
+  drop(reason: string): void;
+  has(): boolean;
+  parts(): string[];
+  /** 正在提早整理的那段原稿（沒有就是 null） */
+  working(): string | null;
+  raw(): string;
+  clear(): void;
+}
+type Num = number | (() => number);
+export function createSegmenter<H = unknown, P = unknown>(input: {
+  pauseMs?: Num; pasteAfterMs?: Num; maxChars?: Num;
+  state: () => { speaking: boolean; starting?: boolean; busy: boolean; lastVoiceAt: number };
+  prepare?: ((raw: string, signal: AbortSignal) => Promise<P>) | null;
+  onWorking?: (raw: string) => void;
+  onSegment: (segment: { raw: string; heard?: H; prepared: Promise<P | null> | null; earlyPolish: boolean }) => void;
+  log?: (m: string) => void; now?: () => number;
+  setTimer?: (fn: () => void, ms: number) => unknown; clearTimer?: (timer: unknown) => void;
+}): Segmenter<H, P>;
+export function heardText(parts?: string[], previews?: string[]): string;
+
+// ---- 小框的階段（bubble.mjs）----
+export type BubbleState = 'hearing' | 'ignored' | 'working' | 'pasted' | 'command' | 'done' | 'failed' | 'nofield' | 'error' | 'hide';
+export interface BubbleEvent { state: BubbleState; text?: string; detail?: string; speaker?: '' | 'mine' | 'short' | 'enrolling'; enrollSeconds?: number }
+export interface BubbleContent { title: string; body: string; tone: 'blue' | 'green' | 'orange' | 'red'; loud: boolean; busy: boolean; result: boolean; holdMs: number | null }
+export const BUBBLE_HOLD_MS: Record<string, number>;
+export const BUBBLE_MAX_CHARS: number;
+export function bubbleContent(event: BubbleEvent, lang?: string): BubbleContent | null;
+export function stepText(step: CommandStep, lang?: string): string;
+export function clipHead(text: string, max?: number): string;

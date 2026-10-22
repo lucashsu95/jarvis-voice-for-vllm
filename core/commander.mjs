@@ -3,7 +3,8 @@
 // 「點、填字、按 Enter、寫訊息、完成、做不到」和對象 → 做 → 等畫面更新。
 // 寫訊息前先確認現在打開的是和對的人的對話，不是就停、不寫。寫完就結束，不送出。
 // 決策：能讀到畫面的 app 用 Jev（快）；截圖認出來的畫面、Jev 沒把握、做了畫面沒變，這一步改問 AI。
-// 做到決策器說完成或做不到為止；信心太低（動作 < 0.3、對象 < 0.25）、同一步做了畫面沒變、按「暫停收音」就停。
+// 做到決策器說完成或做不到為止；信心太低（動作 < 0.3、對象 < 0.25）、同一步做了畫面沒變、做了 maxSteps 步、按「暫停收音」就停。
+// 換到了目標講的那一頁（goalReached）就算完成，不再問決策器（模型看到新頁上還有同名的按鈕，常會一直點下去）。
 
 import { describeElement, recipientQuestion, stepQuestions } from './decide.mjs';
 
@@ -16,6 +17,17 @@ const ACTION_MIN = 0.3;
 const TARGET_MIN = 0.25;
 const RECIPIENT_MIN = 0.6; // 寫訊息前，確定是和對的人的對話
 const ESCALATE_BELOW = 0.5; // Jev 對下一步沒把握，這一步改問 AI
+export const MAX_COMMAND_STEPS = 12; // 畫面一直在變時靠這個停
+
+/**
+ * 已經到了：做過至少一步、換到了另一頁，而且新頁的標題（拆成幾個詞）都在目標裡。
+ * 例：目標「打開行事曆」、換到「行事曆」；目標「打開台積電（2330）的個股頁」、換到「台積電 2330」。
+ */
+export function goalReached(goal, title, startTitle, doneSteps) {
+  if (doneSteps < 1 || !title || title === startTitle) return false;
+  const words = title.split(/[\s|｜\-–—:：·・/()（）]+/).filter((w) => w.length >= 2 || /\d/.test(w));
+  return words.length > 0 && words.every((w) => goal.includes(w));
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -90,8 +102,9 @@ async function sendMessage({ screen, decider, log, text, message, context, stopp
 }
 
 // { goal, text：要搜尋的字（傳訊息時是對方的名字）, message：要寫的訊息, app：要先切過去的 app }；
-// switchApp(name) 把那個 app 叫到前面（回傳有沒有成功；screen 之後就看那個 app）；stopped() 為 true 就停（按了暫停）
-export async function runCommand({ screen, decider, log = () => {}, switchApp = async () => false, goal, text = '', message = '', app = '', context = {}, stopped = () => false }) {
+// switchApp(name) 把那個 app 叫到前面（回傳有沒有成功；screen 之後就看那個 app）；stopped() 為 true 就停（按了暫停）；
+// onStep({ n, action, target })：每一步決定好時通知（小框寫做到哪一步，見 bubble.mjs 的 stepText）
+export async function runCommand({ screen, decider, log = () => {}, switchApp = async () => false, goal, text = '', message = '', app = '', context = {}, stopped = () => false, onStep = () => {}, maxSteps = MAX_COMMAND_STEPS }) {
   if (app && !(context.app ?? '').toLowerCase().includes(app.toLowerCase())) {
     log(`指令：先切到 ${app}`);
     if (!(await switchApp(app))) return { ok: false, reason: `找不到 app「${app}」` };
@@ -102,9 +115,16 @@ export async function runCommand({ screen, decider, log = () => {}, switchApp = 
   let filled = 0; // 剛填字的輸入框，按 Enter 用
   let last = null; // 上一步：{ screen：畫面摘要, act：做了什麼 }
   let stuck = 0; // 做了之後畫面沒變的次數
+  let startTitle = null;
   for (let step = 0; ; step += 1) {
     if (stopped()) return { ok: false, reason: '按了暫停，停下來', steps: done };
+    if (step >= maxSteps) return { ok: false, reason: `做了 ${maxSteps} 步還沒完成，停下來`, steps: done };
     const snap = await screen.elements({ limit: 150, ocr: 'auto' });
+    startTitle ??= snap.window?.title ?? '';
+    if (goalReached(goal, snap.window?.title ?? '', startTitle, done.length)) {
+      log(`指令：已經換到「${snap.window.title}」，算完成`);
+      return { ok: true, steps: done };
+    }
     const list = snap.elements ?? [];
     const screenKey = `${snap.window?.title ?? ''}|${list.map((e) => `${e.label}:${e.value ?? ''}`).join('|')}`;
     const noChange = !!last && last.screen === screenKey;
@@ -139,6 +159,7 @@ export async function runCommand({ screen, decider, log = () => {}, switchApp = 
     const target = answers.target ?? {};
     const el = list[Number(String(target.choice ?? '').slice(1))];
     log(`指令第 ${step + 1} 步（${engine}，${Date.now() - started} ms）：${action.choice}（${(action.confidence ?? 0).toFixed(2)}）${el ? ` → ${describeElement(el, snap.window)}（${(target.confidence ?? 0).toFixed(2)}）` : ''}`);
+    onStep({ n: step + 1, action: action.choice, target: el ? describeElement(el, snap.window) : '' });
     if (noChange && last.act === `${action.choice}:${target.choice}`) return { ok: false, reason: '同一步做了畫面沒變，停下來', steps: done };
     last = { screen: screenKey, act: `${action.choice}:${target.choice}` };
     if (action.choice === 'done') return { ok: true, steps: done };

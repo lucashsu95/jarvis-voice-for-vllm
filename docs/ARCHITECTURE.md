@@ -171,13 +171,20 @@ LINE 這類 app 輔助使用只讀得到搜尋框和訊息框（實測 3 個元�
 - `transcription.mjs`：`createTranscriber` 是一條 OpenAI Realtime transcription 連線（每句一個 commit；連線前的聲音先排著；斷了就重連，把還沒拿到字的聲音與句子照順序重送；每句的字照講的順序、帶起訖時間）。Mac 小程式用 `lazy`（有聲音才連，安靜夠久先關）。`createSpeechTranscription` 是一段錄音（輸入框聽寫、驗收錄影的字幕）：斷句、時鐘校正、`hearing`／`recognizing` 狀態、checkpoint、finish。
 - `dictation.mjs`：輸入框聽寫停下後的第二層與寫回：`polishTranscript`（整理、逾時照原稿）、`applyPolish`（寫成什麼、要不要送出、留不留換回原文）、`revertPolish`、`joinPolished`。
 
+一段話講完之後的流程也在核心，Mac 小程式（`bin/listen.mjs`）和 CubeLV 的「對 CEO 鈕講話」走同一份，各自只接接頭：
+
+- `flow.mjs`：`judgeUtterance`（AI 整理順便判斷是不是指令；有 Jev 才另外問：游標在輸入框時 `judgeInField` 看畫面，不在輸入框時問是指令的機率、要 ≥ 0.95 才改當指令；沒有 Jev 就照 AI 整理的判斷；整理失敗回 `failed`，照原稿寫）、`planOutput`（整理完要做什麼：指令、刪掉剛剛那段、換回原文、只有語氣詞不寫、寫字）、`pickTarget`（游標不在輸入框時挑一個框：上次寫的、只有一個就直接用，其他問決策器，沒有決策器照規則）。**不問使用者**：拿不準就照 AI 整理的判斷；挑不到框時做什麼由 App 決定（Mac 小框寫「沒貼上」、CubeLV 長按 CEO 鈕時交給 CEO）。
+- `segment.mjs`：`createSegmenter` 一直收音時幾句合成一段（每句轉完、停滿 `ai.segmentPauseMs` 才算講完；`speed.pasteAfterMs` 提早整理，整理好時已經停夠就直接用，又開口作廢；太長先整理）；`heardText` 小框顯示「已經轉好的字＋還在講的那幾句的預覽」。
+- `bubble.mjs`：小框有哪些階段（聽著／聽到、別人在講話、整理中、已貼上、語音指令＋做到哪一步、指令完成／沒完成、沒貼上、出錯）、標題和內文寫什麼（台灣正體、英文、日文）、顏色、停多久（`BUBBLE_HOLD_MS`），`stepText` 寫指令做到哪一步。Mac 的游標旁小框（`app/ui.js`）與 CubeLV 的頂端 toast 只負責畫。
+- `commander.mjs` 的 `runCommand`：每一步決定好時呼叫 `onStep`；換到目標講的那一頁（`goalReached`）就算完成；最多 `maxSteps`（12）步。
+
 其他專案用 `scripts/sync-core.sh <目標資料夾>` 同步一份過去：每個檔案開頭寫來源 commit，不在那邊改；要改回 `core/` 改再同步。TypeScript 用 `core/index.d.mts` 的型別。
 
 ## 程式
 
 | 檔案 | 做什麼 |
 |---|---|
-| `core/` | 共用核心：`hedge.mjs`（雙發）、`editor.mjs`（AI 整理）、`decide.mjs`（決策題目與門檻）、`commander.mjs`（指令步驟）、`targeter.mjs`、`learn.mjs`、`vocab.mjs`、`turns.mjs`（斷句）、`transcription.mjs`（即時轉寫連線）、`dictation.mjs`（輸入框聽寫的寫回）、`ocr.mjs`（截圖認字的字排順序、接成文字、跟其他上下文合在字數內）、`providers.mjs`（自己的 key）、`index.d.mts`（型別） |
+| `core/` | 共用核心：`flow.mjs`（一段話講完之後怎麼處理）、`segment.mjs`（幾句合成一段）、`bubble.mjs`（小框的階段）、`hedge.mjs`（雙發）、`editor.mjs`（AI 整理）、`decide.mjs`（決策題目與門檻）、`commander.mjs`（指令步驟）、`targeter.mjs`、`learn.mjs`、`vocab.mjs`、`turns.mjs`（斷句）、`transcription.mjs`（即時轉寫連線）、`dictation.mjs`（輸入框聽寫的寫回）、`ocr.mjs`（截圖認字的字排順序、接成文字、跟其他上下文合在字數內）、`providers.mjs`（自己的 key）、`index.d.mts`（型別） |
 | `bin/listen.mjs` | 常駐程式：收音、切句、分段、讀上下文、AI 整理、找輸入框、指令、寫入、換回原文、自動學詞 |
 | `bin/ax-agent.js` | 常駐的 AX 小幫手（JXA），stdin／stdout 一行一個 JSON：context、paste、replace、targets、focus、read、elements、act |
 | `bin/ax.mjs` | 跟小幫手講話；掛了、卡住、用久了就重開 |

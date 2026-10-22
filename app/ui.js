@@ -702,13 +702,14 @@ function showFlash(kind, ms) {
 // ── 游標旁的小框 ──
 // 放在游標下面（下面放不下就放上面）；拿不到游標放視窗下方中間，都沒有就放主螢幕下方中間。
 // 左邊一條色條看狀態：藍＝聽著／整理中、綠＝已貼上／完成、橘＝沒貼上／沒完成、紅＝出錯。
+// 有哪些階段、標題和內文寫什麼、停多久都在核心（core/bubble.mjs，CubeLV 的頂端 toast 同一份），
+// 常駐程式算好送來：{ state, title, body, tone, loud, busy, result, holdMs }，這裡只畫。
 const BUBBLE_MAX_TEXT_W = 420;
 const BUBBLE_PAD_X = 14;
 const BUBBLE_PAD_Y = 8;
 const BUBBLE_BAR_W = 3;
-const BUBBLE_MAX_CHARS = 84; // 內文最多三行：一行約 30 個中文字，只留最後這麼多字，最新的字才一定看得到
-// 結果顯示多久就淡出（秒）；聽著、整理中、指令做到一半會一直留著，20 秒沒新消息才收
-const BUBBLE_HOLD = { pasted: 1.4, done: 1.8, ignored: 2.5, nofield: 3, failed: 3.5, error: 4 };
+// 聽著、整理中、指令做到一半（holdMs 是 null）會一直留著，20 秒沒新消息才收
+const BUBBLE_IDLE_S = 20;
 let bubblePanel = null;
 let bubbleTitle = null;
 let bubbleBody = null;
@@ -760,33 +761,7 @@ function makeBubble() {
   bubblePanel = panel;
 }
 
-// 小框的標題、內文、色條顏色，以及標題要不要醒目（沒貼上、出錯）
-function bubbleContent(e) {
-  const blue = $.NSColor.systemBlueColor;
-  const green = $.NSColor.systemGreenColor;
-  const orange = $.NSColor.systemOrangeColor;
-  const step = e.detail ? `\n${e.detail}` : '';
-  switch (e.state) {
-    case 'hearing': {
-      // 還在錄聲紋樣本：多一行說還要講多久。小標籤寫是誰講的（開了「只聽我的聲音」、這句比過聲紋才有）
-      if (!e.text) return e.detail ? [t('聽著…', 'Listening…'), e.detail, blue] : [t('聽著…', 'Listening…'), '', blue];
-      const who = { mine: t('你說的', 'You said'), short: t('你說的（短句）', 'You said (short)'), enrolling: t('聽到（正在錄你的聲紋）', 'Heard (learning your voice)') }[e.speaker];
-      return [who ?? t('聽到', 'Hearing'), `${e.text}${step}`, blue];
-    }
-    case 'ignored': return [t('別人在講話，這句不轉寫', 'Someone else is talking; not transcribed'), e.text, orange, true];
-    case 'working': return [t('整理中', 'Cleaning up'), e.text, blue];
-    case 'pasted': return [t('已貼上', 'Pasted'), '', green];
-    case 'command': return [t('語音指令', 'Voice command'), `${e.text}${step}`, blue];
-    case 'done': return [t('指令完成', 'Command done'), e.text, green];
-    case 'failed': return [t('指令沒完成', 'Command not done'), `${e.text}${step}`, orange, true];
-    case 'nofield': return [t('游標不在輸入框，這段沒貼上', 'Not in a text field; nothing was pasted'),
-      t('點選單列的 JarvisVoice →「複製上一句」可以拿回來', 'Get it back from JarvisVoice in the menu bar → "Copy last sentence"'), orange, true];
-    case 'error': return [t('出錯了', 'Something went wrong'), e.text, $.NSColor.systemRedColor, true];
-    default: return null;
-  }
-}
-
-const clipHead = (text) => (text.length > BUBBLE_MAX_CHARS ? `…${text.slice(-BUBBLE_MAX_CHARS)}` : text);
+const BUBBLE_TONES = { blue: 'systemBlueColor', green: 'systemGreenColor', orange: 'systemOrangeColor', red: 'systemRedColor' };
 
 // 小框放哪：at 是左上角原點的螢幕座標（輔助使用的座標），換成 Cocoa 的左下角原點。
 // above：放在游標那行上面（已貼上、完成：剛貼的字從游標往右下長，放下面會蓋到）
@@ -826,19 +801,17 @@ function placeBubble(at, w, h, above) {
 
 function showBubble(e) {
   if (e.state === 'hide' || (view.state !== 'listening' && e.state !== 'error')) { hideBubble(); return; }
-  const content = bubbleContent(e);
-  if (!content) return;
+  if (typeof e.title !== 'string') return;
   if (!bubblePanel) makeBubble();
-  const [title, body, color, loud] = content;
+  const { title, body = '', loud = false, busy = false, result = false } = e;
+  const color = $.NSColor[BUBBLE_TONES[e.tone] ?? 'systemBlueColor'];
   const titleOnly = !body;
-  const busy = e.state === 'working' || e.state === 'command';
-  const result = e.state === 'pasted' || e.state === 'done';
   if (result || !bubbleVisible) bubbleWidth = 0;
   // 只有一行標題（已貼上、聽著）或沒貼上、出錯時標題亮、粗；有內文時標題是小的灰字
   bubbleTitle.setFont(titleOnly ? $.NSFont.systemFontOfSizeWeight(13, 0.23) : $.NSFont.systemFontOfSizeWeight(loud ? 12 : 11, loud ? 0.4 : 0.3));
   bubbleTitle.setTextColor(titleOnly || loud ? $.NSColor.labelColor : $.NSColor.secondaryLabelColor);
   bubbleTitle.setStringValue(title);
-  bubbleBody.setStringValue(body ? clipHead(body) : '');
+  bubbleBody.setStringValue(body);
   bubbleBody.setHidden(titleOnly);
   bubbleBar.layer.setBackgroundColor(color.CGColor);
   const titleSize = bubbleTitle.fittingSize;
@@ -862,7 +835,7 @@ function showBubble(e) {
   bubblePanel.orderFrontRegardless;
   bubbleVisible = true;
   if (bubbleTimer) { bubbleTimer.invalidate; bubbleTimer = null; }
-  bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(BUBBLE_HOLD[e.state] ?? 20, controller, 'bubbleFade:', $(), false);
+  bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(e.holdMs ? e.holdMs / 1000 : BUBBLE_IDLE_S, controller, 'bubbleFade:', $(), false);
 }
 
 function hideBubble() {

@@ -40,11 +40,14 @@ import { createLocalEngine, createPreviewer } from './engines/local.mjs';
 import { VOICEPRINT_MODEL, createVoiceprintFilter } from './voiceprint.mjs';
 import { createRealtimeEngine, cubelvConnector, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
 import { appendHistory } from './history.mjs';
-import { createDecider, describeElement, fieldQuestions, inFieldIntentQuestion, inFieldVerdict, intentQuestion, referenceQuestion } from './decide.mjs';
+import { createDecider, intentQuestion } from './decide.mjs';
 import { createLearner } from './learn.mjs';
 import { createVocabAuto } from './vocab-auto.mjs';
-import { rankTargets } from './targeter.mjs';
 import { finishText, isSpeech, withSpacing } from './text.mjs';
+// 一段話講完之後怎麼處理、幾句合成一段、小框的階段：都在核心（CubeLV、平行沙盒同一份），這裡只接 Mac 的接頭
+import { judgeInField, judgeUtterance, pickTarget, planOutput } from '../core/flow.mjs';
+import { createSegmenter, heardText } from '../core/segment.mjs';
+import { bubbleContent, stepText } from '../core/bubble.mjs';
 
 const LOCK = join(STATE_DIR, 'listener.lock');
 const PAUSED = join(STATE_DIR, 'paused');
@@ -58,7 +61,6 @@ const POLL_MS = 500;
 const SEGMENT_CHECK_MS = 100;
 const HOLD_MS = 60_000; // 寫的時候前景是不收音的 app（例如開會），最多等一分鐘回來再寫
 const MAX_SEGMENT_CHARS = 1500; // 一直講不停太長就先整理這一段
-const NOT_IN_FIELD_SURE = 0.95; // 游標不在輸入框、AI 說是打字時，Jev 要這麼確定是指令才改當指令
 const MAC_PEAK_OVER_NOISE = 9; // 還沒開口時尖峰到底噪的 9 倍就算有人聲（10/19 實測：風扇聲裡沒人講話最大約 7.5 倍，正常講話 10 倍以上）
 
 const argv = process.argv.slice(2);
@@ -128,20 +130,21 @@ function hudShow(mode) {
   else if (mode.startsWith('error:')) bubble('error', { text: mode.slice(6) });
 }
 
-// 游標旁的小框（app/ui.js 畫，標題的字也由它照系統語言寫）。state：
-//   hearing（講話中，text 是聽到的字；speaker 是聲紋比對：mine 你說的、short 短句、enrolling 正在錄你的聲紋）、
-//   ignored（聲紋不像你、這句不轉寫，text 是本機預覽聽到的字）、working（整理中，text 是轉寫原稿）、pasted、
-//   command（text 是指令，detail 是做到哪一步）、done、failed（detail 是原因）、nofield、error（text 是原因）、hide。
+// 游標旁的小框（app/ui.js 畫）。有哪些階段、標題和內文寫什麼、停多久都在核心（core/bubble.mjs，CubeLV 的頂端 toast 同一份），
+// 這裡照系統語言算好交給 ui.js：{ state, title, body, tone, loud, busy, result, holdMs, at }。
 // at：游標（拿不到就是視窗）在螢幕上的位置 { x, y, w, h, kind: caret | window }（左上角原點），小框放在它下面；null 就放畫面下方中間
+const LANG = process.env.VOICE_DICTATION_LANG || process.env.LANG || '';
+const ZH = /^zh/i.test(LANG);
 let bubbleKey = '';
 let lastAnchor = null;
 const bubbleOn = () => config.speed.bubble && (appMode || !!process.env.VOICE_DICTATION_HUD);
-function bubble(state, { text = '', detail = '', speaker = '' } = {}) {
+function bubble(state, { text = '', detail = '', speaker = '', enrollSeconds = 0 } = {}) {
   if (!bubbleOn()) return;
-  const key = `${state}|${text}|${detail}|${speaker}|${JSON.stringify(lastAnchor)}`;
+  const key = `${state}|${text}|${detail}|${speaker}|${enrollSeconds}|${JSON.stringify(lastAnchor)}`;
   if (key === bubbleKey) return;
   bubbleKey = key;
-  emit({ type: 'bubble', state, text, detail, speaker, at: lastAnchor });
+  const content = state === 'hide' ? null : bubbleContent({ state, text, detail, speaker, enrollSeconds }, ZH ? 'zh' : 'en');
+  emit({ type: 'bubble', state, ...(content ?? {}), at: lastAnchor });
 }
 
 // 讀到上下文就記下游標在哪，小框跟著放
@@ -211,14 +214,14 @@ function startEngine() {
       if (!isSpeech(text)) {
         log(`轉寫結果：${text ? `「${text}」只有標點` : '（空的）'}，這句沒有字，不寫`);
         showHeard();
-        checkSegment();
+        segmenter.check();
         return;
       }
       log(`轉寫結果：${text}`);
       if (aiReady()) {
-        addToSegment(text, heard);
+        segmenter.add(text, heard);
         showHeard();
-        checkSegment(); // 字一回來就看能不能提早整理，不等下一輪
+        segmenter.check(); // 字一回來就看能不能提早整理，不等下一輪
       } else enqueueOutput({ kind: 'text', text, heard });
     },
   };
@@ -456,7 +459,7 @@ function speechStarted() {
   turnAudio = [];
   turnAudioBytes = 0;
   previewedBytes = 0;
-  if (early) dropEarly('又開口了');
+  segmenter.drop('又開口了');
   turnVerdict = null;
   void prefetchContext();
   warmUp();
@@ -494,17 +497,17 @@ function finishedPreview(turnNo) {
   for (const k of previews.keys()) if (k <= upTo) previews.delete(k);
 }
 
-// 小框顯示目前聽到的：這段已經轉好的字＋還在講（或還在轉）的那句的預覽
+// 小框顯示目前聽到的：這段已經轉好的字＋還在講（或還在轉）的那句的預覽（核心 heardText）
 function showHeard() {
   if (state !== 'listening') return;
-  const parts = [...(segment?.parts ?? []), ...previews.values()];
-  const text = parts.map(withSpacing).join('').trim();
-  if (early && !detector.speaking) bubble('working', { text: early.raw });
+  const text = heardText(segmenter.parts(), [...previews.values()]);
+  const early = segmenter.working();
+  if (early && !detector.speaking) bubble('working', { text: early });
   else if (detector.speaking || text) {
     // 還在錄聲紋樣本：小框多一行說還要講多久；講話中還不知道是誰，講完比過聲紋才標「你說的」
-    const enrolling = voiceprint && !voiceprint.enrolled() ? `建立你的聲紋中，再正常講約 ${Math.ceil(voiceprint.needSeconds())} 秒` : '';
+    const enrollSeconds = voiceprint && !voiceprint.enrolled() ? voiceprint.needSeconds() : 0;
     const speaker = !voiceprint || detector.speaking ? '' : !voiceprint.enrolled() ? 'enrolling' : lastSpeaker;
-    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, detail: enrolling, speaker });
+    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, enrollSeconds, speaker });
   }
   else if (!outputQueue.length && !outputBusy) bubble('hide');
 }
@@ -584,81 +587,28 @@ function stopCapture() {
   finishTurn();
 }
 
-// ---- 第二層：一段話（幾句）講完才整理 ----
+// ---- 第二層：一段話（幾句）講完才整理（規則在核心 core/segment.mjs，CubeLV 的一直聽同一份）----
+// 每句都轉完、而且停了 ai.segmentPauseMs 才算一段講完；提早整理（speed.pasteAfterMs）：每句都轉完、沒在講話就先整理這段，
+// 整理好時已經停了 pasteAfterMs 就算講完、直接貼；又開口或又多一句就作廢，等整段講完一起整理（跟原本一樣）
 
-let segment = null; // { parts: [], chars, heard：最後一句的 { voiceEndAt, heardAt, ms, early } }
-let segmentForce = false;
-
-function addToSegment(text, heard) {
-  segment ??= { parts: [], chars: 0 };
-  segment.parts.push(text);
-  segment.chars += text.length;
-  segment.heard = heard;
-}
+const segmenter = createSegmenter({
+  pauseMs: () => config.ai.segmentPauseMs,
+  pasteAfterMs: () => config.speed.pasteAfterMs,
+  maxChars: MAX_SEGMENT_CHARS,
+  state: () => ({ speaking: detector.speaking, starting: detector.starting, busy: !!engine?.busy() || pendingBytes > 0, lastVoiceAt }),
+  prepare: (raw, signal) => frontNow().then((front) => prepare(raw, front, signal)),
+  onWorking: (raw) => bubble('working', { text: raw }),
+  onSegment: ({ raw, heard, prepared, earlyPolish }) => enqueueOutput({ kind: 'segment', raw, heard, prepared, earlyPolish }),
+  log,
+});
 
 // 辨識中（選單列的循環箭頭在轉）：有句子在轉寫、一段還在等整理、或整理好還沒寫進去
 let working = false;
 function updateWorking() {
-  const now = !!(engine?.busy() || segment || outputQueue.length || outputBusy);
+  const now = !!(engine?.busy() || segmenter.has() || outputQueue.length || outputBusy);
   if (now === working) return;
   working = now;
   hudWrite(now ? 'working' : 'idle');
-}
-
-// 每句都已經轉完、而且停了夠久，才算一段講完。
-// 提早整理（speed.pasteAfterMs）：每句都轉完、沒在講話就先整理這段（不等 ai.segmentPauseMs），
-// 整理好時已經停了 pasteAfterMs 就算講完、直接貼；又開口或又多一句就作廢，等整段講完一起整理（跟原本一樣）
-let early = null; // { raw, controller, prepared, done, timer }
-const segmentRaw = () => segment.parts.map(withSpacing).join('').trim();
-
-function dropEarly(reason) {
-  if (!early) return;
-  early.controller.abort();
-  clearTimeout(early.timer);
-  early = null;
-  log(`提早整理作廢：${reason}`);
-}
-
-function startEarly(raw) {
-  const controller = new AbortController();
-  const mine = { raw, controller, done: false, timer: null };
-  mine.prepared = frontNow().then((front) => prepare(raw, front, controller.signal)).catch((err) => {
-    log(`提早整理出錯：${err?.stack || err}`);
-    return null;
-  });
-  mine.prepared.then(() => {
-    mine.done = true;
-    if (early === mine) checkSegment();
-  });
-  early = mine;
-  bubble('working', { text: raw });
-}
-
-function finishSegment(raw) {
-  const prepared = early && early.raw === raw ? early.prepared : null;
-  if (early) clearTimeout(early.timer);
-  early = null;
-  const { heard } = segment;
-  segment = null;
-  segmentForce = false;
-  enqueueOutput({ kind: 'segment', raw, heard, prepared, earlyPolish: !!prepared });
-}
-
-function checkSegment() {
-  if (!segment) return;
-  if (detector.speaking) { dropEarly('又開口了'); return; }
-  if (engine.busy() || pendingBytes) { dropEarly('又有一句在轉寫'); return; }
-  const raw = segmentRaw();
-  if (early && early.raw !== raw) dropEarly('又多了一句');
-  const quietMs = Date.now() - lastVoiceAt;
-  const long = segment.chars >= MAX_SEGMENT_CHARS;
-  if (segmentForce || long || quietMs >= config.ai.segmentPauseMs) { finishSegment(raw); return; }
-  const pasteAfter = config.speed.pasteAfterMs;
-  if (!(pasteAfter > 0)) return;
-  if (!early) { startEarly(raw); return; }
-  if (!early.done || detector.starting) return; // 有聲音了、還不知道是不是又開口：等一下
-  if (quietMs >= pasteAfter) finishSegment(raw);
-  else early.timer ??= setTimeout(checkSegment, pasteAfter - quietMs + 5);
 }
 
 // ---- 寫進輸入框 ----
@@ -700,31 +650,13 @@ async function axCall(op, args, timeoutMs) {
 const decider = createDecider(() => ({ jevKey: config.jev.apiKey, jevModel: config.jev.model, ai: aiReady() ? aiSettings() : null }));
 const commandsOn = () => config.commands && aiReady();
 
-// 第三層（輸入）：游標不在輸入框，挑視窗裡要寫的輸入框。上次寫的那個或只有一個就直接用，
-// 其他交給決策器（Jev 或 AI）挑，沒有決策器就照規則排第一的。只挑不對焦（跟 AI 整理同時做），確定要打字才 focusField
+// 第三層（輸入）：游標不在輸入框，挑視窗裡要寫的輸入框（規則在核心 core/flow.mjs 的 pickTarget：上次寫的那個或只有一個就直接用，
+// 其他交給決策器挑，沒有決策器就照規則排第一的）。只挑不對焦（跟 AI 整理同時做），確定要打字才 focusField
 async function pickField(pid, transcript, ctx) {
   const found = await axCall('targets', { pid });
   if (!found) return null;
   const remembered = rememberedTargets.get(`${pid}:${found.window?.title ?? ''}`);
-  let { choice, reason, sure, list } = rankTargets({ candidates: found.candidates, window: found.window, remembered });
-  if (!sure && decider.available()) {
-    try {
-      const started = Date.now();
-      const a = await decider.decide({ transcript, app: ctx?.app ?? '', window: found.window?.title ?? '' }, fieldQuestions(list, found.window));
-      const pick = list[Number(String(a.target?.choice ?? '').slice(1))];
-      if (pick) {
-        choice = pick;
-        reason = `${decider.engine()} 挑的，信心 ${(a.target.confidence ?? 0).toFixed(2)}，${Date.now() - started} ms`;
-      }
-    } catch (err) {
-      log(`決策器失敗，改照規則挑：${err.message}`);
-    }
-  }
-  if (!choice) {
-    log(`游標不在輸入框，${reason}`);
-    return null;
-  }
-  return { choice, reason };
+  return pickTarget({ candidates: found.candidates, window: found.window, remembered, transcript, decider, context: { app: ctx?.app ?? '' }, log });
 }
 
 async function focusField({ choice, reason }) {
@@ -840,34 +772,18 @@ function speedNote(item, prep, pasteStartAt, pastedAt) {
   return { parts, line: `速度：講完到貼上 ${s(parts.total)} 秒（${bits.join('、')}）` };
 }
 
-// 游標在輸入框時問 Jev：看畫面上有什麼，判斷這句是不是要操作畫面
-async function judgeInField(raw, front, ctx) {
-  // 讀不到畫面的 app（例如 LINE）會用截圖認出來的字補上
-  const snap = await axCall('elements', { pid: front.pid, limit: 150, ocr: 'auto' }, 15000);
-  noteCapturePermission(snap?.source);
-  const items = (snap?.elements ?? []).filter((e) => !['AXTextField', 'AXTextArea', 'AXComboBox', 'AXSearchField'].includes(e.role)).slice(0, 120);
-  const field = [ctx.field.label, ctx.field.role].filter(Boolean).join('，');
-  const answers = await decider.decide({
-    transcript: raw, app: ctx.app ?? '', window: ctx.window ?? '', field: `${field}（游標在這）`,
-    screen: items.map((e) => describeElement(e, snap?.window)),
-  }, { intent: inFieldIntentQuestion(), target: referenceQuestion(items, snap?.window) });
-  return inFieldVerdict(answers, items);
-}
-
-// AI 整理。是不是指令：
-//   游標不在輸入框：照 AI 整理的判斷（實測只用 AI 40/40；再要 Jev 也同意，反而會擋掉「傳訊息給某人」）。
-//     只有一個例外是單向的：AI 說是打字、Jev 很確定是要操作畫面（≥ 0.95）時改當指令——同一句「開啟我的 email」
-//     AI 有時判成打字，游標不在輸入框就會被貼進這個視窗上次寫的地方（10/19 貼進 Threads 的發文框）；
-//   游標在輸入框：開了指令模式而且有 Jev，同時問 Jev（不多花時間），Jev 看了畫面很確定是要操作畫面才算
-//   （這時再請 AI 拆出目標和要搜尋的字）；AI 說是指令但 Jev 說不是就當成打字，傳訊息給某人除外。
-//   沒有 Jev 就照 AI 整理的判斷（只有開頭講「指令」或傳訊息才算）。
+// AI 整理＋是不是指令：規則在核心（core/flow.mjs 的 judgeUtterance，CubeLV 同一份），這裡接 Mac 的 AI、Jev 與輔助使用。
+// 有 Jev 才另外問決策器：游標在輸入框時看畫面判斷是不是要操作（judgeInField），不在輸入框時問是指令的機率；沒有 Jev 就照 AI 整理的判斷。
 // 對照：cubelv_docs/分析/2026-10-18_JarvisVoice_Jev必要性.md
 async function aiEdit(raw, front, ctx, signal) {
   if (!aiReady()) return null;
   const inField = !!ctx?.field.editable;
   const jevOn = commandsOn() && config.jev.apiKey && front.pid;
+  // 讀不到畫面的 app（例如 LINE）會用截圖認出來的字補上
+  const screen = { elements: (opts) => axCall('elements', { pid: front.pid, ...opts }, 15000) };
   const judge = jevOn && inField
-    ? judgeInField(raw, front, ctx).catch((err) => { log(`Jev 判斷指令失敗：${err.message}`); return null; })
+    ? judgeInField({ raw, screen, decider, field: ctx.field, context: { app: ctx.app ?? '', window: ctx.window ?? '' } })
+      .then((v) => { noteCapturePermission(v.source); return v; }, (err) => { log(`Jev 判斷指令失敗：${err.message}`); return null; })
     : null;
   // 游標不在輸入框：同時問 Jev 是不是指令（不多花時間），只在 AI 說是打字時才用得到
   const intent = jevOn && !inField
@@ -884,42 +800,7 @@ async function aiEdit(raw, front, ctx, signal) {
     hedge: config.speed.hedge,
     signal,
   });
-  try {
-    let result = await edit(raw);
-    const verdict = judge ? await judge : null;
-    const jevNote = verdict ? `；Jev：是指令的機率 ${verdict.command.toFixed(2)}${verdict.named ? `，講到「${verdict.named.label}」` : ''}` : '';
-    log(`AI 整理（${result.model}，${result.ms} ms，${result.mode}）：${result.mode === 'command' ? result.goal : result.text || '（無）'}${jevNote}`);
-    if (result.keptRaw) log('AI 把不只語氣詞的話整理成空的：照原稿寫');
-    // 游標在輸入框：AI 說是指令、Jev 看了畫面說不是，當成要打的字。開頭講「指令」或「command」、
-    // 傳訊息給某人（AI 拆出了要寫的訊息）照 AI：Jev 只看畫面上的按鈕，傳訊息的對象不在畫面上，實測 8 次都被擋掉
-    if (result.mode === 'command' && verdict && !verdict.isCommand && !/^\s*(指令|command)/i.test(raw) && !result.message?.trim()) {
-      log('AI 說是指令、Jev 說不是：當成要打的字，貼原稿');
-      return null;
-    }
-    if (result.mode !== 'command' && intent) {
-      const p = await intent;
-      if (p !== null && p >= NOT_IN_FIELD_SURE) {
-        const forced = await edit(`指令，${raw}`);
-        if (forced.mode === 'command') {
-          log(`游標不在輸入框，AI 說是打字、Jev 確定是要操作畫面（${p.toFixed(2)}）：當成指令（${forced.goal}）`);
-          return forced;
-        }
-      } else if (p !== null) log(`游標不在輸入框，Jev 覺得是指令的機率 ${p.toFixed(2)}：照 AI 當成打字`);
-    }
-    if (result.mode !== 'command' && inField && verdict?.isCommand) {
-      // Jev 看了畫面很確定是要操作：照「指令，……」再請 AI 拆一次目標和要搜尋的字
-      const forced = await edit(`指令，${raw}`);
-      if (forced.mode === 'command') {
-        log(`游標在輸入框，但 Jev 確定是要操作畫面：當成指令（${forced.goal}）`);
-        result = forced;
-      }
-    }
-    return result;
-  } catch (err) {
-    if (signal?.aborted) return null; // 提早整理作廢了
-    // 真的要貼這段時才報（提早整理失敗、後來又開口作廢的，不用報）
-    return { failed: err.message };
-  }
+  return judgeUtterance({ raw, inField, edit, judge, intent, aborted: () => !!signal?.aborted, log });
 }
 
 const openApp = (name) => new Promise((resolve) => {
@@ -934,19 +815,13 @@ async function runVoiceCommand(result, raw, front, ctx) {
     return '';
   }
   bubble('command', { text: result.goal });
-  // 小框跟著顯示做到哪一步：log 的「指令第 N 步（Jev，170 ms）：click（0.93） → 按鈕「Gmail」（0.88）」
-  // 寫成「第 1 步：點 按鈕「Gmail」」
-  const VERBS = { click: '點', fill: '填字到', enter: '按 Enter', write: '寫訊息', done: '完成', stuck: '做不到' };
-  const stepLog = (...parts) => {
-    log(...parts);
-    const m = String(parts[0] ?? '').match(/^指令第 (\d+) 步（[^）]*）：(\w+)（[\d.]+）(?: → (.*?)（[\d.]+）)?$/);
-    if (m) bubble('command', { text: result.goal, detail: `第 ${m[1]} 步：${VERBS[m[2]] ?? m[2]}${m[3] ? ` ${m[3]}` : ''}` });
-  };
   let outcome;
   try {
     outcome = await runCommand({
-      ax, decider, log: stepLog, frontApp, openApp, goal: result.goal, text: result.text, message: result.message, app: result.app, context: { app: ctx?.app ?? '' },
+      ax, decider, log, frontApp, openApp, goal: result.goal, text: result.text, message: result.message, app: result.app, context: { app: ctx?.app ?? '' },
       stopped: () => existsSync(PAUSED),
+      // 小框跟著顯示做到哪一步（核心 stepText：「第 1 步：點 按鈕「Gmail」」）
+      onStep: (step) => bubble('command', { text: result.goal, detail: stepText(step, ZH ? 'zh' : 'en') }),
     });
   } catch (err) {
     outcome = { ok: false, reason: err.message, steps: [] };
@@ -981,11 +856,13 @@ async function replaceLast(front, replacement, label) {
   log(`${label}：游標前面已經不是剛貼的字（${r?.result ?? '小幫手沒回'}），沒動；原稿放在「複製上一句」`);
 }
 
+const NOFIELD_HINT = ZH ? '點選單列的 JarvisVoice →「複製上一句」可以拿回來' : 'Get it back from JarvisVoice in the menu bar → "Copy last sentence"';
+
 function skipNoField(raw, role) {
   writeLast(raw);
   log('游標不在輸入框，這段沒寫：', raw, `（${role}）`);
   hudWrite('nofield');
-  bubble('nofield');
+  bubble('nofield', { detail: NOFIELD_HINT });
   emit({ type: 'skipped', text: raw, reason: `not-text-field:${role}` });
   return '';
 }
@@ -1015,36 +892,37 @@ async function deliver(item, front) {
   }
   // 不在輸入框、也沒開自動找或指令：不用送 AI
   if (!inField && !config.autoFocus && !commandsOn()) return skipNoField(raw, ctx.field.role);
-  let result = prep?.result ?? null;
-  if (result?.failed) {
-    log(`AI 整理失敗，改貼原稿：${result.failed}`);
-    lastError = { message: result.failed, at: Date.now() };
-    result = null;
+  // 整理完要做什麼：規則在核心（core/flow.mjs 的 planOutput），整理失敗照原稿寫
+  const plan = planOutput({ raw, result: prep?.result ?? null });
+  if (plan.failed) {
+    log(`AI 整理失敗，改貼原稿：${plan.failed}`);
+    lastError = { message: plan.failed, at: Date.now() };
   }
-  if (result?.mode === 'command') return runVoiceCommand(result, raw, front, ctx);
-  if (result?.mode === 'delete_last') { await replaceLast(front, '', '刪掉剛剛那段'); return ''; }
-  if (result?.mode === 'revert_last') {
+  if (plan.kind === 'command') return runVoiceCommand(plan.result, raw, front, ctx);
+  if (plan.kind === 'delete_last') { await replaceLast(front, '', '刪掉剛剛那段'); return ''; }
+  if (plan.kind === 'revert_last') {
     if (lastInserted?.ai) await replaceLast(front, withSpacing(lastInserted.raw), '換回原文');
     return '';
   }
-  if (result?.mode === 'insert' && !result.text.trim()) {
+  if (plan.kind === 'filler') {
     writeLast(raw);
     bubble('hide');
     log('整段只有語氣詞，不寫：', raw);
     return '';
   }
+  const result = plan.result ?? null;
   if (!inField) {
-    const chosen = config.autoFocus ? await (pick ?? pickField(front.pid, result ? result.text : raw, ctx)) : null;
+    const chosen = config.autoFocus ? await (pick ?? pickField(front.pid, plan.text, ctx)) : null;
     if (!chosen) return skipNoField(raw, ctx.field.role);
     await focusField(chosen);
     ctx = await readContext(front, { screen: false });
   }
-  const text = withSpacing(result ? result.text : raw);
-  writeLast(result ? result.text : raw);
+  const text = withSpacing(plan.text);
+  writeLast(plan.text);
   if (dryPaste) {
     const speed = speedNote(item, prep, Date.now(), Date.now());
     if (speed) log(speed.line);
-    emit({ type: 'pasted', text, raw, mode: result?.mode ?? 'insert', dry: true, ...(speed ? { latencyMs: speed.parts.total, timing: speed.parts } : {}) });
+    emit({ type: 'pasted', text, raw, mode: plan.mode, dry: true, ...(speed ? { latencyMs: speed.parts.total, timing: speed.parts } : {}) });
     return '';
   }
   const pasteStartAt = Date.now();
@@ -1153,7 +1031,7 @@ async function tick() {
   }
   if (active && !ffmpeg && !inputFile && Date.now() >= captureRetryAt) startCapture();
   if (!active && ffmpeg && !inputFile) stopCapture();
-  if (!active && segment) segmentForce = true; // 暫停或切到不收音的 app：講到一半的那段先整理
+  if (!active && segmenter.has()) segmenter.force(); // 暫停或切到不收音的 app：講到一半的那段先整理
 
   if (existsSync(VOICEPRINT_RESET)) {
     try { unlinkSync(VOICEPRINT_RESET); } catch { /* 已經處理 */ }
@@ -1199,7 +1077,7 @@ async function main() {
   process.on('exit', releaseLock);
   setState('standby');
   startEngine();
-  setInterval(() => { checkSegment(); updateWorking(); }, SEGMENT_CHECK_MS);
+  setInterval(() => { segmenter.check(); updateWorking(); }, SEGMENT_CHECK_MS);
 
   if (inputFile) {
     startCapture();
@@ -1209,9 +1087,9 @@ async function main() {
     finishTurn();
     // 等所有句子轉完、整理完、貼完
     const until = Date.now() + 30_000;
-    while (Date.now() < until && (engine.busy() || segment || outputQueue.length || outputBusy)) {
+    while (Date.now() < until && (engine.busy() || segmenter.has() || outputQueue.length || outputBusy)) {
       engine.flush();
-      if (!engine.busy()) segmentForce = true;
+      if (!engine.busy()) segmenter.force();
       void drainOutput(); // 寫不進去（不在最前面）的那段，等一下再試
       await new Promise((r) => setTimeout(r, 200));
     }
