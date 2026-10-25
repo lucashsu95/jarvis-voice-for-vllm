@@ -191,6 +191,21 @@ test('斷句：一直講不停時，底噪不被自己的聲音拉高，後面�
   assert.ok(feed(0.08, 40), '底噪慢慢跟上，這句會切掉');
 });
 
+test('斷句：剛開麥克風、底噪還沒量好時就開始的那句，底噪照常跟著環境走，環境比固定門檻吵不會拖成一長句', () => {
+  // Mac 10/25：麥克風重開後環境 RMS 0.012～0.02（遠處小聲的人聲）比固定門檻 0.011 大，一開就算開口；底噪要跟上，這句才會結束
+  const level = (rms) => {
+    const b = new Int16Array(2400);
+    for (let i = 0; i < b.length; i += 1) b[i] = Math.round((i % 2 ? 1 : -1) * rms * 32767);
+    return b;
+  };
+  const d = new core.AudioTurnDetector({ peakOverNoise: 9 });
+  let turn = null;
+  let t = 0;
+  for (; t < 8000 && !turn; t += 100) turn = d.push(level(t % 300 ? 0.014 : 0.02), t);
+  assert.ok(turn, '環境聲音不會一直算成同一句');
+  assert.ok(turn.endMs - turn.startMs < 3000, `${turn.endMs - turn.startMs} ms`);
+});
+
 test('斷句：有聲音但還不到 180 ms 時是 starting（還不知道是開口還是雜音）', () => {
   const d = new core.AudioTurnDetector();
   d.push(new Int16Array(2400), 0);

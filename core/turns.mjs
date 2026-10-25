@@ -32,6 +32,7 @@ export class AudioTurnDetector {
   activeStart = null;
   lastVoiceEnd = 0;
   lastVoiced = false; // 最近一批有沒有人聲（算「停了多久」用）
+  holdNoise = false; // 這句講話中不讓自己的聲音拉高底噪（開口時底噪已經量好才壓）
   shortBlips = 0; // 有聲音但不到 180 ms、沒算成一句的次數（給呼叫端記 log，自己歸零）
   missLevel = 0; // 沒在講話時、沒算成人聲的那幾批裡最大的音量與尖峰（診斷門檻是不是太高，給呼叫端記 log，自己歸零）
   missPeak = 0;
@@ -73,8 +74,9 @@ export class AudioTurnDetector {
     this.lastVoiced = voiced;
     // 講話中有人聲的那幾批不把底噪往上拉（最多記成底噪的 1.2 倍）：一直講、中間沒什麼停頓時，3 秒裡大多是自己的聲音，
     // 照原本算底噪會被自己的聲音拉高到 2 倍以上（Mac 10/25 實錄 0.012 → 0.0205），門檻跟著漲，小聲一點的話整段收不到、被切成碎片。
-    // 講話中沒聲音的空檔、沒在講話時照原本記，環境變吵還是跟得上；講話中環境真的變吵，底噪也會每 3 秒最多漲 1.2 倍慢慢跟上
-    this.recentLevels.push(this.activeStart !== null && voiced && noise > 0 ? Math.min(level, noise * NOISE_RISE_IN_TURN) : level);
+    // 講話中沒聲音的空檔、沒在講話時照原本記，環境變吵還是跟得上；講話中環境真的變吵，底噪也會每 3 秒最多漲 1.2 倍慢慢跟上。
+    // 剛開麥克風、底噪還沒量好就開始的那句不壓（照原本跟著環境走）：不然遠處小聲的人聲會一直算在這句裡（Mac 10/25 麥克風重開後拖成 8 秒）
+    this.recentLevels.push(this.activeStart !== null && this.holdNoise && voiced && noise > 0 ? Math.min(level, noise * NOISE_RISE_IN_TURN) : level);
     if (this.recentLevels.length > NOISE_WINDOW) this.recentLevels.shift();
     if (!voiced && this.activeStart === null) {
       if (level > this.missLevel) this.missLevel = level;
@@ -85,7 +87,10 @@ export class AudioTurnDetector {
       this.voicedMs += durationMs;
       this.silenceMs = 0;
       this.lastVoiceEnd = startMs + durationMs;
-      if (this.activeStart === null && this.voicedMs >= START_MS) this.activeStart = this.candidateStart;
+      if (this.activeStart === null && this.voicedMs >= START_MS) {
+        this.activeStart = this.candidateStart;
+        this.holdNoise = noise > 0;
+      }
       return null;
     }
     if (this.activeStart === null) {

@@ -26,9 +26,10 @@
 // 測試選項：--file <音檔> 用音檔代替麥克風、讀完收尾結束；--dry-paste 只印不貼；--always 不看前景 app；
 // --pid <pid> 配 --file：只寫進這個 app（端到端測試的測試視窗），讀它的上下文、它到最前面才貼，不會貼到別的 app。
 
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createAx } from './ax.mjs';
 import { runCommand } from './commander.mjs';
 import { TurnSplitter, BATCH_BYTES, SAMPLE_RATE, findFfmpeg } from './common.mjs';
@@ -348,6 +349,10 @@ const takeAudio = (audio) => {
 let levelPeak = 0;
 let reopenCapture = false;
 let levelSince = Date.now();
+// 診斷：這 15 秒麥克風實際交來幾秒聲音（少了＝聲音在進到這裡之前就掉了）、程式最久卡住多久（卡住時 ffmpeg 交不出聲音會丟掉）
+let receivedBytes = 0;
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
 function trackLevel(samples) {
   let peak = 0;
   let sum = 0;
@@ -359,6 +364,13 @@ function trackLevel(samples) {
   if (levelPeak === 0) notes.push('完全沒聲音，多半是剛給麥克風權限前就開了，重開麥克風');
   if (levelPeak >= 0.99) notes.push('有爆音（音量到頂），轉寫可能會錯');
   if (detector.shortBlips) notes.push(`${detector.shortBlips} 次聲音不到 0.18 秒，當雜音沒算成一句`);
+  const gotSec = receivedBytes / (SAMPLE_RATE * 2);
+  const wallSec = (Date.now() - levelSince) / 1000;
+  if (wallSec - gotSec > 0.5) notes.push(`這 ${wallSec.toFixed(1)} 秒只收到 ${gotSec.toFixed(1)} 秒聲音`);
+  const stallMs = loopDelay.max / 1e6;
+  if (stallMs > 300) notes.push(`程式最久卡住 ${Math.round(stallMs)} ms`);
+  receivedBytes = 0;
+  loopDelay.reset();
   // 門檻跟著底噪走：記下現在的底噪、開口門檻，和沒算成人聲的聲音最大到多少（講話沒被聽到時看差多少）
   const th = detector.thresholds();
   const gate = `底噪 ${th.noise.toFixed(4)}、開口門檻 RMS ${th.level.toFixed(3)} 或尖峰 ${th.peak.toFixed(3)}；沒算成人聲的最大 RMS ${detector.missLevel.toFixed(3)}、尖峰 ${detector.missPeak.toFixed(3)}`;
@@ -539,12 +551,52 @@ function finishTurn() {
 }
 
 let captureEnded = null;
+let captureName = 'ffmpeg'; // 現在用哪個收音（原生收音／ffmpeg），記 log 用
 // 麥克風卡住：ffmpeg 還活著但不再送聲音（電腦睡醒、麥克風裝置換了之後會這樣，10/19 卡了 4 小時才發現）。
 // 開著麥克風卻 3 秒都沒有聲音進來（安靜也會一直送 0），就重開
 const CAPTURE_STALL_MS = 3000;
 let lastAudioAt = 0;
+// 收音程式的警告：同一句一分鐘最多記一次，附上這段時間出現幾次
+const ffmpegNotes = new Map(); // 去掉數字的那句 → { at, count }
+function logFfmpeg(line, name) {
+  const key = line.replace(/[0-9.]+/g, '#').slice(0, 120);
+  const note = ffmpegNotes.get(key) ?? { at: 0, count: 0 };
+  note.count += 1;
+  if (Date.now() - note.at >= 60_000) {
+    log(`${name}：${line.trim().slice(0, 200)}${note.count > 1 ? `（一分鐘內 ${note.count} 次）` : ''}`);
+    note.at = Date.now();
+    note.count = 0;
+  }
+  ffmpegNotes.set(key, note);
+}
+
+// 收麥克風用原生小幫手（bin/mic-capture.swift，AVAudioEngine）：ffmpeg 的 avfoundation 會掉約一成聲音
+// （10/25 實測 20 秒只交出 17.9 秒，小幫手 20.0 秒），講話中間少一截、句尾變「……」。
+// 第一次用 swiftc 編到 <狀態資料夾>/bin/mic-capture（原始檔改了會重編）；沒有 swiftc、編不過或開不起來就照舊用 ffmpeg。
+const MIC_HELPER_SRC = join(import.meta.dirname, 'mic-capture.swift');
+const MIC_HELPER = join(STATE_DIR, 'bin', 'mic-capture');
+let micHelperBroken = false; // 這次執行開不起來過：之後都用 ffmpeg
+function micHelper() {
+  if (micHelperBroken || process.env.VOICE_DICTATION_FFMPEG_CAPTURE) return null;
+  try {
+    if (existsSync(MIC_HELPER) && statSync(MIC_HELPER).mtimeMs >= statSync(MIC_HELPER_SRC).mtimeMs) return MIC_HELPER;
+    log('編譯原生收音小幫手（第一次約 10 秒）');
+    mkdirSync(join(STATE_DIR, 'bin'), { recursive: true });
+    const tmp = `${MIC_HELPER}.${process.pid}`;
+    execFileSync('/usr/bin/swiftc', ['-O', MIC_HELPER_SRC, '-o', tmp], { stdio: 'ignore', timeout: 180_000 });
+    renameSync(tmp, MIC_HELPER);
+    return MIC_HELPER;
+  } catch (err) {
+    log(`原生收音小幫手編不起來，改用 ffmpeg：${err.message.split('\n')[0]}`);
+    micHelperBroken = true;
+    return null;
+  }
+}
+
 function startCapture() {
-  log('開麥克風');
+  const helper = inputFile ? null : micHelper();
+  const name = helper ? '原生收音' : 'ffmpeg';
+  log(`開麥克風（${name}）`);
   levelPeak = 0;
   levelSince = Date.now();
   // 尖峰門檻用底噪的 9 倍（core/turns.mjs 的 peakOverNoise）：風扇聲裡正常講話才聽得到
@@ -552,19 +604,24 @@ function startCapture() {
   detector = splitter.detector;
   carry = Buffer.alloc(0);
   const input = inputFile ? ['-re', '-i', inputFile] : ['-f', 'avfoundation', '-i', ':default'];
-  const child = spawn(findFfmpeg(), [
-    '-hide_banner', '-loglevel', 'error', '-nostdin', ...input,
+  const child = helper ? spawn(helper, [], { stdio: ['ignore', 'pipe', 'pipe'] }) : spawn(findFfmpeg(), [
+    '-hide_banner', '-loglevel', 'warning', '-nostdin', ...input,
     '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', 'pipe:1',
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  captureName = name;
   ffmpeg = child;
   let errText = '';
   let gotAudio = false;
-  child.stderr.on('data', (d) => { errText = (errText + d.toString()).slice(-400); });
+  child.stderr.on('data', (d) => {
+    errText = (errText + d.toString()).slice(-400);
+    for (const line of d.toString().split('\n').filter(Boolean)) logFfmpeg(line, name);
+  });
   lastAudioAt = Date.now() + 5000; // 剛開的麥克風要一兩秒才有聲音：多等 5 秒
   child.stdout.on('data', (data) => {
     if (ffmpeg !== child) return;
     gotAudio = true;
     lastAudioAt = Date.now();
+    receivedBytes += data.length;
     carry = carry.length ? Buffer.concat([carry, data]) : data;
     while (carry.length >= BATCH_BYTES) {
       takeBatch(Buffer.from(carry.subarray(0, BATCH_BYTES)));
@@ -577,13 +634,27 @@ function startCapture() {
     ffmpeg = null;
     finishTurn();
     if (inputFile) return;
-    const detail = errText.trim().split('\n').at(-1) || `ffmpeg 結束（${code}）`;
+    const detail = errText.trim().split('\n').at(-1) || `${name}結束（${code}）`;
+    // 小幫手：麥克風裝置換了會自己結束（code 0），馬上重開；一點聲音都沒交出來就是開不起來，改用 ffmpeg
+    if (helper && gotAudio && code === 0) { captureRetryAt = Date.now() + 300; return; }
+    if (helper && !gotAudio) {
+      log(`原生收音開不起來，改用 ffmpeg：${detail}`);
+      micHelperBroken = true;
+      captureRetryAt = Date.now() + 300;
+      return;
+    }
     setError(gotAudio ? `麥克風中斷：${detail}` : `麥克風開不起來：${detail}`);
     captureRetryAt = Date.now() + 10_000;
   });
   child.on('error', (err) => {
     if (ffmpeg !== child) return;
     ffmpeg = null;
+    if (helper) {
+      log(`原生收音開不起來，改用 ffmpeg：${err.message}`);
+      micHelperBroken = true;
+      captureRetryAt = Date.now() + 300;
+      return;
+    }
     setError(`ffmpeg 開不起來：${err.message}（brew install ffmpeg）`);
     captureRetryAt = Date.now() + 30_000;
   });
@@ -1036,7 +1107,7 @@ async function tick() {
 
   if (reopenCapture && ffmpeg && !inputFile) { reopenCapture = false; stopCapture(); }
   if (ffmpeg && !inputFile && Date.now() - lastAudioAt > CAPTURE_STALL_MS) {
-    log(`麥克風 ${((Date.now() - lastAudioAt) / 1000).toFixed(1)} 秒沒有聲音進來（ffmpeg 卡住，多半是電腦睡醒或換了麥克風），重開麥克風`);
+    log(`麥克風 ${((Date.now() - lastAudioAt) / 1000).toFixed(1)} 秒沒有聲音進來（${captureName}卡住，多半是電腦睡醒或換了麥克風），重開麥克風`);
     stopCapture();
   }
   if (active && !ffmpeg && !inputFile && Date.now() >= captureRetryAt) startCapture();
