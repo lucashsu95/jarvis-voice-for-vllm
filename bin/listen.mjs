@@ -605,7 +605,7 @@ function startCapture() {
   carry = Buffer.alloc(0);
   const input = inputFile ? ['-re', '-i', inputFile] : ['-f', 'avfoundation', '-i', ':default'];
   const child = helper ? spawn(helper, [], { stdio: ['ignore', 'pipe', 'pipe'] }) : spawn(findFfmpeg(), [
-    '-hide_banner', '-loglevel', 'warning', '-nostdin', ...input,
+    '-hide_banner', '-loglevel', inputFile ? 'error' : 'warning', '-nostdin', ...input,
     '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', 'pipe:1',
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
   captureName = name;
@@ -1007,7 +1007,18 @@ async function deliver(item, front) {
     return '';
   }
   const pasteStartAt = Date.now();
-  const pasted = await axCall('paste', { pid: front.pid, text, ask: !askedAccessibility }, 6000);
+  let pasted = await axCall('paste', { pid: front.pid, text, ask: !askedAccessibility }, 6000);
+  // 要貼的時候游標已經不在輸入框（開口時在框裡，講完前點到按鈕、區塊，或焦點被 app 移走）：跟開口時就不在框裡一樣，
+  // 自動挑視窗裡的輸入框對焦再貼，不丟掉這段（10/25 兩段長話因為焦點在 AXGroup、AXPopUpButton 整段沒寫）
+  if (pasted?.result?.startsWith('not-text-field') && config.autoFocus) {
+    log(`要貼的時候游標不在輸入框（${pasted.result.slice(15)}），自動找輸入框`);
+    const chosen = await pickField(front.pid, plan.text, ctx);
+    if (chosen) {
+      await focusField(chosen);
+      ctx = await readContext(front, { screen: false });
+      pasted = await axCall('paste', { pid: front.pid, text, ask: !askedAccessibility }, 6000);
+    }
+  }
   const pastedAt = Date.now();
   if (pasted?.result === 'no-accessibility') {
     if (!askedAccessibility) log('貼不進去：「JarvisVoice」還沒有輔助使用權限，開了就會補貼：', text);
@@ -1021,9 +1032,9 @@ async function deliver(item, front) {
     return 'retry';
   }
   if (pasted?.result?.startsWith('not-text-field')) {
-    log('游標不在輸入框，這段沒寫：', text, `（${pasted.result.slice(15)}）`);
+    log('游標不在輸入框，視窗裡也找不到輸入框，這段沒寫（放在「複製上一句」）：', text, `（${pasted.result.slice(15)}）`);
     hudWrite('nofield');
-    bubble('nofield');
+    bubble('nofield', { detail: NOFIELD_HINT });
     emit({ type: 'skipped', text, reason: pasted.result });
     return '';
   }

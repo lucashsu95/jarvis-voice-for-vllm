@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -58,8 +58,11 @@ async function waitIdle(ms, limitMs = 120_000) {
 
 // 開一個空的測試視窗放到最前面，用音檔跑一次 listen.mjs（只寫進這個測試視窗），回傳 listen 的事件、log、視窗裡的字，
 // 以及中間有沒有人動了鍵盤滑鼠（有的話這次不算）
-async function dictate(wav) {
-  const win = spawn('/usr/bin/osascript', ['-l', 'JavaScript', join(ROOT, 'tests', 'fixtures', 'test-window.js'), '--empty'], { stdio: 'ignore' });
+// blur：切完句（開口時讀過游標、確定在框裡）才把測試視窗的焦點從文字框拿掉，模擬講完前點到別的地方
+async function dictate(wav, { blur = false } = {}) {
+  const blurFile = join(work, `blur-${Date.now()}`);
+  const win = spawn('/usr/bin/osascript', ['-l', 'JavaScript', join(ROOT, 'tests', 'fixtures', 'test-window.js'), '--empty',
+    ...(blur ? ['--blur-on', blurFile] : [])], { stdio: 'ignore' });
   try {
     assert.ok(await waitEditable(win.pid), '測試視窗的文字框要能寫');
     assert.ok(await bringToFront(win.pid), '測試視窗要到最前面');
@@ -77,7 +80,10 @@ async function dictate(wav) {
     let out = '';
     let log = '';
     child.stdout.on('data', (d) => { out += d; if (!pastedAt && String(d).includes('"pasted"')) pastedAt = Date.now(); });
-    child.stderr.on('data', (d) => { log += d; });
+    child.stderr.on('data', (d) => {
+      log += d;
+      if (blur && /切出一句/.test(log) && !existsSync(blurFile)) writeFileSync(blurFile, '');
+    });
     await new Promise((r) => child.on('close', r));
     // 貼上是 Cmd+V，app 晚一點才讀剪貼簿：等字出現，最多 3 秒
     let value = '';
@@ -96,6 +102,7 @@ async function dictate(wav) {
 }
 
 const CASES = [
+  { name: 'blur', say: '我們明天下午四點開會，記得帶筆電。', blur: true, expect: [/四點/, /開會/] },
   { name: 'normal', say: '我們明天下午四點開會，記得帶筆電。', expect: [/四點/, /開會/, /筆電/] },
   { name: 'hello', say: '哈囉，哈囉，哈囉。', expect: [/哈囉[^哈]*哈囉/] },
   { name: 'test', say: '測試，測試，測試。', expect: [/測試[^測]*測試/] },
@@ -114,12 +121,14 @@ test('真的講話：念出來的句子一路轉寫、整理，貼進測試視�
   const failures = [];
   const latencies = [];
   try {
-    for (const c of CASES) {
+    // VOICE_DICTATION_E2E_ONLY=blur,normal 只跑這幾句
+    const only = process.env.VOICE_DICTATION_E2E_ONLY?.split(',');
+    for (const c of CASES.filter((x) => !only || only.includes(x.name))) {
       const wav = speak(c.name, c.say, c.volume);
       let run = null;
       for (let attempt = 0; attempt < 3 && (!run || run.touched); attempt += 1) {
         assert.ok(await waitIdle(3000), '等了兩分鐘鍵盤滑鼠都沒停');
-        run = await dictate(wav);
+        run = await dictate(wav, { blur: c.blur });
         if (run.touched) t.diagnostic(`${c.name}：中間有人動了鍵盤滑鼠，這次不算，重跑`);
       }
       assert.ok(!run.touched, `${c.name}：試了三次中間都有人動鍵盤滑鼠`);
