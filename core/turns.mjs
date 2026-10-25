@@ -12,6 +12,7 @@
 
 const NOISE_WINDOW = 30;
 const NOISE_WARMUP = 10;
+const NOISE_RISE_IN_TURN = 1.2;
 const MIN_LEVEL = 0.011;
 const PEAK_OVER_LEVEL = 5;
 const START_OVER_NOISE = 3;
@@ -66,12 +67,15 @@ export class AudioTurnDetector {
     }
     const level = Math.sqrt(sum / samples.length);
     const noise = this.noiseLevel();
-    this.recentLevels.push(level);
-    if (this.recentLevels.length > NOISE_WINDOW) this.recentLevels.shift();
     const threshold = Math.max(MIN_LEVEL, noise * (this.activeStart === null ? START_OVER_NOISE : CONTINUE_OVER_NOISE));
     const peakThreshold = this.activeStart === null ? this.startPeak(noise, threshold) : threshold * PEAK_OVER_LEVEL;
     const voiced = level >= threshold || peak >= peakThreshold;
     this.lastVoiced = voiced;
+    // 講話中有人聲的那幾批不把底噪往上拉（最多記成底噪的 1.2 倍）：一直講、中間沒什麼停頓時，3 秒裡大多是自己的聲音，
+    // 照原本算底噪會被自己的聲音拉高到 2 倍以上（Mac 10/25 實錄 0.012 → 0.0205），門檻跟著漲，小聲一點的話整段收不到、被切成碎片。
+    // 講話中沒聲音的空檔、沒在講話時照原本記，環境變吵還是跟得上；講話中環境真的變吵，底噪也會每 3 秒最多漲 1.2 倍慢慢跟上
+    this.recentLevels.push(this.activeStart !== null && voiced && noise > 0 ? Math.min(level, noise * NOISE_RISE_IN_TURN) : level);
+    if (this.recentLevels.length > NOISE_WINDOW) this.recentLevels.shift();
     if (!voiced && this.activeStart === null) {
       if (level > this.missLevel) this.missLevel = level;
       if (peak > this.missPeak) this.missPeak = peak;

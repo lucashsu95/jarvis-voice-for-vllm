@@ -162,6 +162,35 @@ test('斷句：風扇聲裡（底噪約 0.009）正常講話的尖峰 0.10 預�
   assert.ok(Math.abs(new core.AudioTurnDetector({ peakOverNoise: 9 }).thresholds().peak - 0.055) < 1e-9);
 });
 
+test('斷句：一直講不停時，底噪不被自己的聲音拉高，後面小聲一點的話還在這句裡；講話中環境真的變吵，底噪會慢慢跟上、不會一直不斷句', () => {
+  // Mac 10/25 實錄：一直講時底噪從 0.012 被自己的聲音拉到 0.0205，門檻跟著漲，句尾小聲的字被當成停頓，那句被切掉、轉寫結尾變「……」
+  const level = (rms) => {
+    const b = new Int16Array(2400);
+    for (let i = 0; i < b.length; i += 1) b[i] = Math.round((i % 2 ? 1 : -1) * rms * 32767);
+    return b;
+  };
+  const d = new core.AudioTurnDetector({ peakOverNoise: 9 });
+  let t = 0;
+  const feed = (rms, seconds) => {
+    let turn = null;
+    for (let n = 0; n < seconds * 10; n += 1, t += 100) turn = d.push(level(rms), t) ?? turn;
+    return turn;
+  };
+  feed(0.011, 3); // 風扇聲
+  assert.equal(feed(0.06, 5), null); // 一直講 5 秒
+  assert.equal(d.speaking, true);
+  assert.ok(d.noiseLevel() < 0.02, `底噪 ${d.noiseLevel().toFixed(4)}`);
+  assert.equal(feed(0.035, 1.5), null, '句尾小聲一點的話還在這句裡'); // 原本底噪被拉到 0.06，講話中門檻 0.12，這 1.5 秒會被當成停頓切掉
+  assert.equal(d.speaking, true);
+  const ended = feed(0.011, 1);
+  assert.ok(ended, '真的停了照常切句');
+  // 講到一半環境變吵（例如開了吸塵器）：一直有聲音也不會永遠不斷句
+  feed(0.011, 3);
+  feed(0.06, 0.5);
+  assert.equal(d.speaking, true);
+  assert.ok(feed(0.08, 40), '底噪慢慢跟上，這句會切掉');
+});
+
 test('斷句：有聲音但還不到 180 ms 時是 starting（還不知道是開口還是雜音）', () => {
   const d = new core.AudioTurnDetector();
   d.push(new Int16Array(2400), 0);

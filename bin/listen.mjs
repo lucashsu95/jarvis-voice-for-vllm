@@ -38,6 +38,7 @@ import { DEFAULT_URLS } from '../core/providers.mjs';
 import { createBatchEngine } from './engines/batch.mjs';
 import { createLocalEngine, createPreviewer } from './engines/local.mjs';
 import { VOICEPRINT_MODEL, createVoiceprintFilter } from './voiceprint.mjs';
+import { createAudioDebug } from './audio-debug.mjs';
 import { createRealtimeEngine, cubelvConnector, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
 import { appendHistory } from './history.mjs';
 import { createDecider, intentQuestion } from './decide.mjs';
@@ -256,6 +257,9 @@ function reloadConfigIfChanged() {
   const stamp = configMtime(config);
   if (stamp === configStamp) return;
   if (engine?.busy()) return; // 有句子還在轉寫，等轉完再換（換引擎會丟掉轉到一半的）
+  // 正在講、或有聲音已經交給引擎還沒切句：等這句講完再換。換引擎會把已經交出去的聲音丟掉
+  // （10/25 詞彙表自動加詞在講話中途換引擎，那句講了 1.9 秒只轉到 1.4 秒）
+  if (detector.speaking || detector.starting || pendingBytes) return;
   configStamp = stamp;
   ({ config, error: configError } = loadConfig());
   configStamp = configMtime(config);
@@ -316,6 +320,8 @@ let sentSamples = 0;
 let lastSpeechAt = 0;
 let lastVoiceAt = 0; // 最後一次真的聽到人聲（算一段講完了沒）
 let turnPeak = 0; // 這一句的最大音量（記 log 用）
+// 自己 debug 用：存每一句與麥克風的音檔（設定 debug.saveAudio，預設關；bin/audio-debug.mjs）
+const audioDebug = createAudioDebug({ enabled: () => !!config.debug?.saveAudio, log });
 let batchRms = 0; // 最近一批（0.1 秒）的音量，說話中送給選單列畫聲波
 // 音量換成 0–1 給選單列：-50 dB 以下是 0、-10 dB 以上是 1
 const levelOf = (rms) => Math.min(1, Math.max(0, (20 * Math.log10(Math.max(rms, 1e-6)) + 50) / 40));
@@ -368,6 +374,7 @@ function trackLevel(samples) {
 }
 
 function takeBatch(chunk) {
+  audioDebug.mic(chunk);
   const samples = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
   const peak = trackLevel(samples);
   const startMs = sentSamples / 24;
@@ -402,14 +409,16 @@ function takeBatch(chunk) {
     turnVerdict = null;
     const loud = `最大音量 ${turnPeak.toFixed(3)}${turnPeak >= 0.99 ? '，爆音' : ''}`;
     turnPeak = 0;
+    const audioFile = audioDebug.turn(turnAudio, { verdict: verdict.verdict ?? (verdict.pass ? 'pass' : 'other'), sec });
     if (verdict.pass) {
-      log(`切出一句 ${sec.toFixed(1)} 秒（${loud}），送去轉寫`);
+      log(`切出一句 ${sec.toFixed(1)} 秒（${loud}），送去轉寫${audioFile ? `（音檔 ${audioFile}）` : ''}`);
       queueTurn();
     } else {
       stageAudio();
       engine.skip?.();
       // 小框寫「別人在講話，這句不轉寫」，附上本機預覽聽到的字（看得到擋了什麼）
       const heard = previews.get(currentTurn) ?? '';
+      if (audioFile) log(`擋掉的這句：音檔 ${audioFile}，本機預覽聽到「${heard}」`);
       finishedPreview(currentTurn);
       bubble('ignored', { text: heard });
     }
@@ -585,6 +594,7 @@ function stopCapture() {
   ffmpeg = null;
   try { child?.kill('SIGKILL'); } catch { /* 已經結束 */ }
   finishTurn();
+  audioDebug.flush();
 }
 
 // ---- 第二層：一段話（幾句）講完才整理（規則在核心 core/segment.mjs，CubeLV 的一直聽同一份）----

@@ -52,6 +52,10 @@
 //     "threshold": 0.3,                // 跟你的聲紋相似度低於這個就不要（實測別人最高 0.27）
 //     "minSeconds": 1.5,               // 比這短的句子另外用 shortThreshold
 //     "shortThreshold": 0.4            // 短句的門檻（咖啡店實測：你的短句 0.75 以上，別人的短句、雜音 0.20～0.31）
+//   },
+//   "debug": {                         // 自己 debug 用，預設關
+//     "saveAudio": false               // 存音檔到 <狀態資料夾>/audio/：每一句（放行、聲紋擋掉都存，log 寫檔名）＋麥克風每分鐘一個檔
+//                                      // （沒被當成講話的聲音也查得到）；句子留最近 400 個、麥克風留最近 30 分鐘
 //   }
 // }
 
@@ -115,6 +119,7 @@ export function defaults() {
     jev: { apiKey: '', apiKeyFile: '', apiKeyCommand: '', model: 'jev-latest' },
     speed: { earlyTranscribeMs: 400, pasteAfterMs: 1200, hedge: 2, preview: true, bubble: true, warm: true },
     voiceprint: { enabled: false, threshold: 0.3, minSeconds: 1.5, shortThreshold: 0.4 },
+    debug: { saveAudio: false },
   };
 }
 
@@ -259,6 +264,7 @@ export function loadConfig() {
     jev: { ...base.jev, ...file.jev },
     speed: { ...base.speed, ...file.speed },
     voiceprint: { ...base.voiceprint, ...file.voiceprint },
+    debug: { ...base.debug, ...file.debug },
   };
   if (!ENGINES.includes(config.engine)) {
     error = `engine 只能是 ${ENGINES.join('、')}，設定檔寫的是「${config.engine}」`;
