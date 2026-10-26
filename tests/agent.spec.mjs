@@ -55,8 +55,8 @@ test('操作代理：照 AI 挑的工具一步步做，AI 說 done 就完成；�
   assert.deepEqual(steps.map((s) => [s.n, s.action]), [[1, 'open_page'], [2, 'click']]);
   assert.equal(steps[1].target, '分頁「走勢」');
   assert.equal(r.steps.length, 2);
-  // 第二步看得到第一步做了什麼，也看得到原話
-  assert.match(ai.seen[1], /<done>\n1\. open_page/);
+  // 第二步看得到第一步做了什麼、為什麼做，也看得到原話
+  assert.match(ai.seen[1], /<done>\n1\. open_page .*（為了：個股頁有走勢） → 做了/);
   assert.match(ai.seen[0], /<said>幫我打開台積電的走勢圖<\/said>/);
   assert.match(ai.seen[0], /- scroll\(direction/);
   assert.match(ai.seen[0], /- done\(summary/);
@@ -75,6 +75,19 @@ test('操作代理：AI 說 fail 就停並帶原因；工具不在清單裡連�
   const loop = await core.runAgent({ screen: stuck, complete: fakeAi([click, click, click, click]).complete, goal: 'x' });
   assert.match(loop.reason, /同一步做了三次/);
   assert.equal(stuck.runs.length, 2);
+
+  // 在兩步之間來回（畫面一直在變，不算同一個畫面）：A、B、A、B 就停；同一步一直做（往下捲）不算
+  let flip = 0;
+  const flipping = {
+    tools: core.standardTools(['click']),
+    snapshot: async () => ({ text: `排序 ${flip % 2 ? '最舊' : '最新'}`, labels: { e1: '按鈕「最新」', e2: '按鈕「最舊」' } }),
+    run: async () => { flip += 1; return { ok: true }; },
+    settle: async () => {},
+  };
+  const toggles = [1, 2, 1, 2].map((i) => ({ tool: 'click', args: { ref: `e${i}` }, why: '' }));
+  const bounced = await core.runAgent({ screen: flipping, complete: fakeAi(toggles).complete, goal: 'x' });
+  assert.match(bounced.reason, /來回/);
+  assert.equal(flip, 3);
 
   let n = 0;
   const moving = {

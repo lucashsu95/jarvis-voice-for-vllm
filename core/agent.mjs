@@ -3,7 +3,8 @@
 // 做到 AI 說畫面就是目標、或 AI 說做不到為止。
 // 沒有寫死的做法：先搜尋還是先捲動、走側欄還是直接開頁面，都由 AI 看畫面決定；能用哪些工具由接頭宣告（screen.tools）。
 // 只擋一件事：會送出、刪除、付款、下單、發布的按鈕不自己按，做到按之前就停，交給使用者。
-// 迴圈自己只在這些時候停：按了停止、做了 maxSteps 步、同一個畫面同一步做了三次、AI 連兩次回不出看得懂的下一步。
+// 迴圈自己只在這些時候停：按了停止、做了 maxSteps 步、同一個畫面同一步做了三次、在兩步之間來回（A、B、A、B）、
+// AI 連兩次回不出看得懂的下一步。
 
 // screen 是 App 的畫面接頭：
 //   screen.tools：[{ name, args, about }]，這個 App 能用的工具（標準的見 AGENT_TOOLS，App 可以加自己的，例如直接打開某一頁）
@@ -39,7 +40,8 @@ const END_TOOLS = [
 
 const SYSTEM = '你在替使用者操作 App。每次只做一步：看 <screen>（現在的畫面；能操作的東西前面有 [編號]，'
   + '畫面外、收起來的也列出來了，可以直接用）、<goal>（使用者要的結果；<said> 是他講的原話）、<done>（已經做過的步驟和結果），'
-  + '從 <tools> 挑一個工具、填好參數。畫面上真的看得到使用者要的東西才用 done（畫面寫著不支援、找不到、出錯都不算，換別的做法再試）；'
+  + '從 <tools> 挑一個工具、填好參數。每一步先對照 <done>：上一步做完，現在的畫面是不是已經是使用者要的結果，是就用 done，不要再多做。'
+  + '畫面上真的看得到使用者要的東西才用 done（畫面寫著不支援、找不到、出錯都不算，換別的做法再試）；'
   + '試過幾種做法都不行才用 fail。'
   + '會送出、刪除、付款、下單、發布的按鈕不要按：做到按之前就用 done，在 summary 說明留給使用者自己按。'
   + '只輸出 JSON：{"tool": "<工具名>", "args": {<參數>}, "why": "<一句話：為什麼做這一步>"}';
@@ -117,6 +119,7 @@ export async function runAgent({ screen, complete, goal, said = '', context = {}
   let lastKey = '';
   let repeats = 0;
   let unreadable = 0;
+  const recent = []; // 做過的每一步（工具＋對象），看有沒有在幾步之間來回
   for (let n = 1; ; n += 1) {
     if (stopped()) return { ok: false, reason: '按了停止，停下來', steps: done };
     if (n > maxSteps) return { ok: false, reason: `做了 ${maxSteps} 步還沒完成，停下來`, steps: done };
@@ -146,6 +149,10 @@ export async function runAgent({ screen, complete, goal, said = '', context = {}
     repeats = key === lastKey ? repeats + 1 : 0;
     lastKey = key;
     if (repeats >= 2) return { ok: false, reason: '同一個畫面同一步做了三次，停下來', steps: done };
+    // 在兩步之間來回（A、B、A、B）：畫面一直在變也停。同一步一直做（往下捲、下一頁）不算，交給 maxSteps
+    recent.push(`${call.tool}:${target}`);
+    const [a, b, c, d] = recent.slice(-4);
+    if (d !== undefined && a === c && b === d && a !== b) return { ok: false, reason: '一直在兩步之間來回，停下來', steps: done };
     onStep({ n, action: call.tool, target });
     let result;
     try {
@@ -153,7 +160,8 @@ export async function runAgent({ screen, complete, goal, said = '', context = {}
     } catch (err) {
       result = { ok: false, note: err?.message ?? String(err) };
     }
-    done.push(`${call.tool}${target ? ` ${target}` : ''} → ${result?.ok ? '做了' : '沒做成'}${result?.note ? `（${result.note}）` : ''}`);
+    // 連為什麼做這一步一起記，下一步才知道上一步是不是已經達成目標
+    done.push(`${call.tool}${target ? ` ${target}` : ''}${call.why ? `（為了：${call.why.slice(0, 80)}）` : ''} → ${result?.ok ? '做了' : '沒做成'}${result?.note ? `（${result.note}）` : ''}`);
     if (screen.settle) await screen.settle(); else await sleep(SETTLE_MS);
   }
 }
