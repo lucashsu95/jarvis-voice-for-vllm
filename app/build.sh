@@ -35,5 +35,23 @@ set_key LSUIElement bool true
 set_key NSMicrophoneUsageDescription string "JarvisVoice 要用麥克風聽你講話，轉成文字寫進輸入框，或照你講的操作 app。"
 set_key NSAppleEventsUsageDescription string "JarvisVoice 要送出貼上（Cmd+V），把字放進輸入框。"
 
-# 本機簽名：麥克風、輔助使用權限才會認得同一個 app
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+# install.sh 給的版本戳記要在簽名前寫進去，簽完 .app 裡就不能再動
+if [[ -n "${BUILD_STAMP:-}" ]]; then
+  echo "$BUILD_STAMP" > "$APP/Contents/Resources/build-stamp"
+fi
+
+# 簽名：鑰匙圈有開發者憑證就用它簽，系統認的是 bundle id＋憑證，之後重包麥克風、輔助使用權限都不用重給。
+# 沒有憑證才用本機簽名，系統只認這一版，重包就得重給。要指定憑證就設 JARVIS_SIGN_IDENTITY。
+IDENTITY="${JARVIS_SIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" ]]; then
+  IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  # 同名憑證可能有好幾張，用 SHA-1 指定才不會被當成不明確
+  IDENTITY="$(grep -m1 '"Developer ID Application: ' <<<"$IDENTITIES" | awk '{print $2}' || true)"
+  [[ -n "$IDENTITY" ]] || IDENTITY="$(grep -m1 '"Apple Development: ' <<<"$IDENTITIES" | awk '{print $2}' || true)"
+fi
+if [[ -n "$IDENTITY" ]] && codesign --force --deep --sign "$IDENTITY" "$APP" >/dev/null 2>&1; then
+  :
+else
+  [[ -z "$IDENTITY" ]] || echo "用憑證簽名失敗，改用本機簽名：這次重包後權限要重給" >&2
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+fi

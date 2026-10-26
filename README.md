@@ -201,7 +201,7 @@ If you'd rather not get and look after your own keys, you can use a CubeLV accou
 - **Errors after signing in with CubeLV**: "Out of CubeLV credits" means top up in CubeLV; "Your CubeLV sign-in has expired" means choose "Sign in with CubeLV…" again. You can also switch back to on-device or your own key from the menu.
 - **Nothing gets pasted**: make sure the cursor is in a text field, then make sure "JarvisVoice" is turned on under Accessibility.
 - **Detailed log**: `~/.voice-dictation/listen.log`.
-- **Reinstall or update**: `git pull && ./install.sh`. If the app shell (`app/main.js`) and packaging haven't changed, it isn't rebuilt and you keep your permissions; if they have, macOS asks for the microphone again, and you need to turn "JarvisVoice" off and on again under Accessibility.
+- **Reinstall or update**: `git pull && ./install.sh`. If the app shell (`app/main.js`) and packaging haven't changed, it isn't rebuilt and you keep your permissions. If your keychain has an Apple developer certificate (Developer ID Application or Apple Development), the app is signed with it and keeps its permissions across rebuilds; otherwise it's signed ad hoc, macOS asks for the microphone again after a rebuild, and under Accessibility you need to select "JarvisVoice", remove it with "−", then reopen JarvisVoice and turn it on (just toggling it off and on doesn't work: the switch looks on but still points at the old build).
 
 ## How it works
 

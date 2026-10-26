@@ -113,15 +113,17 @@ for OLD in "$HOME/Applications/全語音輸入.app" "$HOME/Applications/語音�
   fi
 done
 pkill -f "$APP/Contents/MacOS/applet" 2>/dev/null || true
-# 小程式本身沒變就不重包：重包會換簽名，麥克風與輔助使用權限得重新允許
+# 小程式本身沒變就不重包：沒有開發者憑證時是本機簽名，重包會換簽名，麥克風與輔助使用權限得重新允許
 STAMP="$(printf '%s\n%s\n%s\n%s\n' "$(shasum -a 256 "$DIR/app/main.js" "$DIR/app/build.sh" | cut -d' ' -f1 | tr '\n' ' ')" "$NODE" "$DIR" "$STATE" | shasum -a 256 | cut -d' ' -f1)"
 if [[ -f "$APP/Contents/Resources/build-stamp" && "$(cat "$APP/Contents/Resources/build-stamp")" == "$STAMP" ]]; then
   note "沒有變動，沿用原本的 app（權限不用重給）"
 else
-  "$DIR/app/build.sh" "$APP" "$DIR" "$NODE" "$STATE"
-  echo "$STAMP" > "$APP/Contents/Resources/build-stamp"
-  codesign --force --deep --sign - "$APP" >/dev/null 2>&1
-  note "已包好（第一次用或小程式有更新時，系統會再問一次權限）"
+  BUILD_STAMP="$STAMP" "$DIR/app/build.sh" "$APP" "$DIR" "$NODE" "$STATE"
+  if codesign -dv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+    note "已包好（本機簽名：第一次用或小程式有更新時，系統會再問一次權限）"
+  else
+    note "已包好（開發者憑證簽名：權限給過一次，之後重包不用重給）"
+  fi
 fi
 
 mkdir -p "$(dirname "$AGENT")"

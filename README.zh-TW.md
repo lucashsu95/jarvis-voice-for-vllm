@@ -201,7 +201,7 @@ AI 會：
 - **用 CubeLV 登入後出錯**：選單寫「CubeLV 點數用完了」就到 CubeLV 加值；寫「CubeLV 登入已失效」就重新按「用 CubeLV 登入…」。也可以直接從選單換回本機辨識或自己的 key。
 - **字沒貼進去**：先確認游標在輸入框裡，再確認「輔助使用」裡有打開「JarvisVoice」。
 - **看詳細記錄**：`~/.voice-dictation/listen.log`。
-- **重新安裝或更新**：`git pull && ./install.sh`。外殼 `app/main.js` 或打包設定沒變就不會重包，權限不用重給；有變的話系統會再問一次麥克風，輔助使用要到設定裡把「JarvisVoice」關掉再打開。
+- **重新安裝或更新**：`git pull && ./install.sh`。外殼 `app/main.js` 或打包設定沒變就不會重包，權限不用重給。鑰匙圈裡有 Apple 開發者憑證（Developer ID Application 或 Apple Development）時會用它簽名，重包也不用重給權限；沒有的話是本機簽名，重包後系統會再問一次麥克風，輔助使用要到設定裡選「JarvisVoice」按「−」移除，再重開 JarvisVoice 打開它（只把開關關掉再打開沒用，開關看起來是開的，認的還是舊版）。
 
 ## 怎麼運作
 
