@@ -153,7 +153,7 @@ test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的�
   const voice = (axis) => core.normalize(Array.from({ length: 8 }, (_, i) => (i === axis ? 1 : 0) + rand() * 0.2));
   const vp = core.createVoiceprint();
   assert.equal(vp.enrolled(), false);
-  assert.equal(vp.needSeconds(), core.ENROLL_SECONDS);
+  assert.equal('needSeconds' in vp, false, '聲紋在背景學：核心不給還要講幾秒');
   // 錄樣本：收滿 10 秒（自己 3 句、中間混一句別人）
   assert.equal(vp.judge(voice(0), 3).verdict, 'enrolling');
   assert.equal(vp.judge(voice(1), 3).verdict, 'enrolling');
@@ -161,7 +161,6 @@ test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的�
   const done = vp.judge(voice(0), 3);
   assert.equal(done.verdict, 'enrolled');
   assert.equal(done.kept, 3, '別人那句不算進樣本');
-  assert.equal(vp.needSeconds(), 0);
   const mine = vp.judge(voice(0), 3);
   assert.equal(mine.pass, true);
   assert.equal(mine.verdict, 'mine');

@@ -140,12 +140,12 @@ const ZH = /^zh/i.test(LANG);
 let bubbleKey = '';
 let lastAnchor = null;
 const bubbleOn = () => config.speed.bubble && (appMode || !!process.env.VOICE_DICTATION_HUD);
-function bubble(state, { text = '', detail = '', speaker = '', enrollSeconds = 0 } = {}) {
+function bubble(state, { text = '', detail = '', speaker = '' } = {}) {
   if (!bubbleOn()) return;
-  const key = `${state}|${text}|${detail}|${speaker}|${enrollSeconds}|${JSON.stringify(lastAnchor)}`;
+  const key = `${state}|${text}|${detail}|${speaker}|${JSON.stringify(lastAnchor)}`;
   if (key === bubbleKey) return;
   bubbleKey = key;
-  const content = state === 'hide' ? null : bubbleContent({ state, text, detail, speaker, enrollSeconds }, ZH ? 'zh' : 'en');
+  const content = state === 'hide' ? null : bubbleContent({ state, text, detail, speaker }, ZH ? 'zh' : 'en');
   emit({ type: 'bubble', state, ...(content ?? {}), at: lastAnchor });
 }
 
@@ -454,23 +454,23 @@ function startVoiceprint() {
     model: join(STATE_DIR, 'models', 'speaker', VOICEPRINT_MODEL), file: VOICEPRINT_FILE, threshold, minSeconds, shortThreshold, log,
   }) : null;
   lastSpeaker = '';
-  if (voiceprint) log(voiceprint.enrolled() ? '只聽你的聲音：開（聲紋已錄好）' : '只聽你的聲音：開，先從你接下來講的話錄聲紋樣本（約 10 秒，照常轉寫）');
+  if (voiceprint) log(voiceprint.enrolled() ? '只聽你的聲音：開（聲紋已錄好）' : '只聽你的聲音：開，從你講的話在背景學你的聲音（學好之前照常轉寫）');
 }
 
-// 小框的小標籤寫是誰講的：最後一句比過聲紋的結果（mine 你說的、short 短句、enrolling 正在錄你的聲紋）
+// 小框的小標籤寫是誰講的：最後一句比過聲紋的結果（mine 你說的、short 短句；聲紋還在背景學的時候不標）
 let lastSpeaker = '';
 
 // 這句是不是使用者講的：還在錄樣本、太短、像使用者都放行；不像就不轉寫。v：停 0.4 秒時算好的聲紋
 function judgeTurn(sec, v = null) {
   if (!voiceprint) return { pass: true };
   const r = v ? voiceprint.commit(v, sec) : voiceprint.check(Buffer.concat(turnAudio, turnAudioBytes), sec);
-  if (r.verdict === 'enrolling') log(`錄聲紋樣本：還要約 ${Math.ceil(voiceprint.needSeconds())} 秒`);
+  if (r.verdict === 'enrolling') log('聲紋還在背景學：這句當樣本，照常轉寫');
   else if (r.verdict === 'enrolled') {
     log(`聲紋樣本錄好了（留下 ${r.kept} 句）：之後不像你的聲音不轉寫`);
     announceSettings();
   } else if (r.verdict === 'other') log(`聲紋不像你（相似度 ${r.score.toFixed(2)}，${sec.toFixed(1)} 秒，${r.ms} ms）：這句不轉寫`);
   else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '短句，是你' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
-  if (r.pass) lastSpeaker = r.verdict === 'enrolled' ? 'mine' : r.verdict;
+  if (r.pass) lastSpeaker = r.verdict === 'enrolled' ? 'mine' : r.verdict === 'enrolling' ? '' : r.verdict;
   return r;
 }
 
@@ -525,10 +525,9 @@ function showHeard() {
   const early = segmenter.working();
   if (early && !detector.speaking) bubble('working', { text: early });
   else if (detector.speaking || text) {
-    // 還在錄聲紋樣本：小框多一行說還要講多久；講話中還不知道是誰，講完比過聲紋才標「你說的」
-    const enrollSeconds = voiceprint && !voiceprint.enrolled() ? voiceprint.needSeconds() : 0;
-    const speaker = !voiceprint || detector.speaking ? '' : !voiceprint.enrolled() ? 'enrolling' : lastSpeaker;
-    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, enrollSeconds, speaker });
+    // 講話中還不知道是誰，講完比過聲紋才標「你說的」；聲紋還在背景學的時候不標（core/voiceprint.mjs：沒有建立聲紋這一步）
+    const speaker = !voiceprint || detector.speaking || !voiceprint.enrolled() ? '' : lastSpeaker;
+    bubble('hearing', { text: text.length > 120 ? `…${text.slice(-120)}` : text, speaker });
   }
   else if (!outputQueue.length && !outputBusy) bubble('hide');
 }

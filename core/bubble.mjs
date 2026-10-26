@@ -1,8 +1,8 @@
 // JarvisVoice 核心：講話時那個小框（Mac 是游標旁的小框，CubeLV 是頂端的 toast）有哪些階段、寫什麼字、停多久。
 // 各 App 只負責畫：bubbleContent 回 { title, body, tone, loud, busy, result, holdMs }。
 // 階段（state）：
-//   hearing：講話中，text 是聽到的字；speaker 是聲紋比對（mine 你說的、short 短句、enrolling 正在錄你的聲紋），
-//            enrollSeconds 是還要講多久才錄好聲紋；
+//   hearing：講話中，text 是聽到的字；speaker 是聲紋比對（mine 你說的、short 短句）。
+//            聲紋還在背景學的時候不標、也不說還要講多久（core/voiceprint.mjs：沒有建立聲紋這一步）；
 //   ignored：聲紋不像你、這句不轉寫（text 是預覽聽到的字）；working：整理中（text 是轉寫原稿）；pasted：已貼上；
 //   command：語音指令（text 是目標，detail 是做到哪一步，見 stepText）；done：指令完成；failed：指令沒完成（detail 是原因）；
 //   nofield：沒有輸入框、這段沒貼上（detail 是 App 給的補充，例如 Mac 的「複製上一句」）；error：出錯（text 是原因）；hide：收起來。
@@ -19,8 +19,6 @@ const TEXT = {
   heard: ['聽到', 'Hearing', '聞き取り'],
   mine: ['你說的', 'You said', 'あなたの声'],
   short: ['你說的（短句）', 'You said (short)', 'あなたの声（短い文）'],
-  enrolling: ['聽到（正在錄你的聲紋）', 'Heard (learning your voice)', '聞き取り（声紋を登録中）'],
-  enrollNeed: ['建立你的聲紋中，再正常講約 {n} 秒', 'Learning your voice: keep talking normally for about {n} more seconds', '声紋を登録中：あと約 {n} 秒ふつうに話してください'],
   ignored: ['別人在講話，這句不轉寫', 'Someone else is talking; not transcribed', 'ほかの人の声なので文字にしません'],
   working: ['整理中', 'Cleaning up', '整理中'],
   pasted: ['已貼上', 'Pasted', '貼り付けました'],
@@ -59,11 +57,10 @@ export function bubbleContent(e, lang = 'zh') {
   });
   switch (e.state) {
     case 'hearing': {
-      // 還在錄聲紋樣本：多一行說還要講多久。小標籤寫是誰講的（開了「只聽我的聲音」、這句比過聲紋才有）
-      const need = e.enrollSeconds > 0 ? pick(TEXT.enrollNeed, lang, Math.ceil(e.enrollSeconds)) : '';
-      if (!e.text) return out(t('listening'), need, 'blue');
-      const who = { mine: 'mine', short: 'short', enrolling: 'enrolling' }[e.speaker];
-      return out(t(who ?? 'heard'), lines(e.text, need), 'blue');
+      // 小標籤寫是誰講的（開了「只聽我的聲音」、聲紋學好了、這句比過才有）
+      if (!e.text) return out(t('listening'), '', 'blue');
+      const who = { mine: 'mine', short: 'short' }[e.speaker];
+      return out(t(who ?? 'heard'), e.text, 'blue');
     }
     case 'ignored': return out(t('ignored'), e.text, 'orange', { loud: true });
     case 'working': return out(t('working'), e.text, 'blue', { busy: true });

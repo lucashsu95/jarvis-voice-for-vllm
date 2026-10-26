@@ -352,10 +352,9 @@ function refreshSettings() {
   commandsItem.setState(settings.commands ? 1 : 0);
   const vp = settings.voiceprint ?? {};
   voiceprintItem.setState(vp.enabled ? 1 : 0);
-  voiceprintItem.setTitle(!vp.enabled ? t('只聽我的聲音（聲紋）', 'Only my voice (voiceprint)')
-    : !vp.ready ? t('只聽我的聲音（聲紋模型沒裝，重跑 install.sh）', 'Only my voice (model missing; rerun install.sh)')
-      : vp.enrolled ? t('只聽我的聲音（聲紋已錄好）', 'Only my voice (voiceprint ready)')
-        : t('只聽我的聲音（正在從你講的話錄聲紋）', 'Only my voice (learning your voice)'));
+  // 聲紋在背景學（core/voiceprint.mjs）：選單不分「學好了／還在學」，只有模型沒裝要說
+  voiceprintItem.setTitle(vp.enabled && !vp.ready ? t('只聽我的聲音（聲紋模型沒裝，重跑 install.sh）', 'Only my voice (model missing; rerun install.sh)')
+    : t('只聽我的聲音（聲紋）', 'Only my voice (voiceprint)'));
   voiceprintResetItem.setEnabled(!!(vp.enabled && vp.ready && vp.enrolled));
   commandsItem.setTitle(settings.decider
     ? t(`語音指令（直接操作 app，${settings.decider} 決策）`, `Voice commands (operate apps, decided by ${settings.decider})`)

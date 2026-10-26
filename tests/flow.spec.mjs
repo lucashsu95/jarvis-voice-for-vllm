@@ -112,11 +112,12 @@ test('幾句合成一段：停滿 pauseMs 才交出去；提早整理好、停�
   assert.equal(late.length, 2);
 });
 
-test('小框：每個階段的標題、內文、顏色、停多久；三種語言；聲紋還要講多久；太長只留最後的字', () => {
+test('小框：每個階段的標題、內文、顏色、停多久；三種語言；聲紋還在背景學不標也不說還要講多久；太長只留最後的字', () => {
   assert.deepEqual(core.bubbleContent({ state: 'hearing' }, 'zh'), { title: '聽著…', body: '', tone: 'blue', loud: false, busy: false, result: false, holdMs: null });
   assert.equal(core.bubbleContent({ state: 'hearing', text: '打開' }, 'zh').title, '聽到');
   assert.equal(core.bubbleContent({ state: 'hearing', text: '打開', speaker: 'mine' }, 'zh').title, '你說的');
-  assert.match(core.bubbleContent({ state: 'hearing', text: '打開', enrollSeconds: 6.2 }, 'zh').body, /打開\n建立你的聲紋中，再正常講約 7 秒/);
+  const learning = core.bubbleContent({ state: 'hearing', text: '打開', speaker: 'enrolling', enrollSeconds: 6.2 }, 'zh');
+  assert.deepEqual([learning.title, learning.body], ['聽到', '打開']);
   assert.equal(core.bubbleContent({ state: 'working', text: 'x' }, 'en').busy, true);
   assert.equal(core.bubbleContent({ state: 'pasted' }, 'ja').title, '貼り付けました');
   assert.equal(core.bubbleContent({ state: 'pasted' }).holdMs, 1400);

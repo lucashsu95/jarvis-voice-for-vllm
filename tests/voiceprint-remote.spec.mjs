@@ -202,6 +202,7 @@ test('前端記樣本：後端送回來的聲紋湊滿樣本就存檔、擋法�
   assert.equal(saved.enrolled.length, 3, '別人那句不算進樣本');
   assert.ok(t.config().reference.length === 8);
   assert.equal(changes.at(-1).enrolled, true);
+  assert.ok(changes.every((c) => !('needSeconds' in c)) && !('needSeconds' in remote), '聲紋在背景學：不給還要講幾秒');
   // 後端擋掉的句子：不記進樣本、擋法不變
   assert.equal(turn(1, 3, false), false);
   assert.equal(changes.at(-1).pass, false);

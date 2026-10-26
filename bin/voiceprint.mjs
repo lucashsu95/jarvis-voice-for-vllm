@@ -65,7 +65,6 @@ export function createVoiceprintFilter({ model, file, threshold, minSeconds, sho
 
   return {
     enrolled: () => vp.enrolled(),
-    needSeconds: () => vp.needSeconds(),
     // 這一場的長句門檻（同一場跟著你的分數往上提，核心 voiceprint.mjs）
     threshold: () => vp.threshold(),
     // 一句講完：回傳 { pass, verdict, score, ms, v }。算不出來（太短）就放行。

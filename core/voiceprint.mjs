@@ -1,6 +1,10 @@
 // JarvisVoice 核心：聲紋過濾——只轉寫使用者自己的聲音（咖啡店裡別人講話、影片的聲音不轉寫、不貼）。
 // 聲紋（speaker embedding）由呼叫端算（Mac 用 sherpa-onnx 的 CAM++ 中文模型），這裡只放比對規則：錄樣本、判斷、越用越準。
 //
+// 聲紋在背景自己學，沒有「建立聲紋」這一步（10/26 使用者定：整個是自動化的流程，一開始沒有建立聲紋）：
+//   開了就照常轉寫，前面講的話順便當樣本（還沒學好時每句都放行），學夠了自動開始擋別人的聲音。
+//   所以核心不給「還要講幾秒」：各 App 不顯示建立中、進度，也不另外做錄樣本的畫面；畫面只在擋掉別人的話時說一聲。
+//
 // 10/19 實測（CAM++ zh-cn、使用者自己的錄音 208 段、別人 234 段）：
 //   - 同一支麥克風：自己對樣本 5%～95% 是 0.26～0.78，別人最高 0.27。
 //   - 同一個地方錄樣本、同一個地方用（咖啡店）：自己的短句「你好，你好，你好」0.75、「哎呀，累」0.77，別人的「發言」0.24、雜音 0.20～0.31。
@@ -106,8 +110,6 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
 
   return {
     enrolled: () => enrolled.length > 0,
-    // 還要錄幾秒樣本
-    needSeconds: () => (enrolled.length ? 0 : Math.max(0, ENROLL_SECONDS - pendingSeconds())),
     // 一句講完：v 是這句的聲紋（正規化過），sec 是秒數。回傳 { pass, verdict, score }
     //   verdict：enrolling（還在錄樣本，照常轉寫）、enrolled（這句湊滿樣本）、short（短句，用短句的門檻放行）、mine、other
     // dryRun：只看不記（講到一半停頓時先比一下，不把半句算進樣本、不加進最近的聲音）
@@ -162,7 +164,7 @@ export function createVoiceprint({ state = {}, threshold = VOICEPRINT_THRESHOLD,
 
 // createRemoteVoiceprint —— 前端用（手機不裝模型）：聲紋由轉寫的後端每句算好送回來（voiceprint.turn），這裡記樣本、越用越準、存檔。
 //   store：{ load() → 存過的（沒有是 null）, save(存檔), clear() }。存哪由各 app 決定（CubeLV：裝置本機，每個帳號、每支麥克風一份）。
-//   onChange({ enrolled, needSeconds, pass, verdict, score })：每句判斷完（畫面顯示還要講幾秒、略過了幾句）。
+//   onChange({ enrolled, pass, verdict, score })：每句判斷完（畫面只拿來說略過了幾句；還在學、剛學好都不顯示）。
 // 回傳的 transcription 交給 createSpeechTranscription／createTranscriber 的 voiceprint 選項。
 export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) {
   let saved = null;
@@ -184,7 +186,6 @@ export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) 
   };
   return {
     enrolled: () => vp.enrolled(),
-    needSeconds: () => vp.needSeconds(),
     // 重錄：刪掉存的聲紋，從接下來講的話重新錄（正在轉寫的話，呼叫端再叫 updateVoiceprint() 把新的擋法送給後端）
     reset: clear,
     transcription: {
@@ -199,7 +200,7 @@ export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) 
       onTurn(event) {
         const pass = event.pass !== false;
         if (!event.embedding?.length) {
-          onChange({ enrolled: vp.enrolled(), needSeconds: vp.needSeconds(), pass, verdict: pass ? 'short' : 'other', score: event.score ?? null });
+          onChange({ enrolled: vp.enrolled(), pass, verdict: pass ? 'short' : 'other', score: event.score ?? null });
           return false;
         }
         const wasEnrolled = vp.enrolled();
@@ -209,7 +210,7 @@ export function createRemoteVoiceprint({ store, onChange = () => {}, ...opts }) 
         const after = vp.gate();
         const changed = after?.reference !== before?.reference || after?.threshold !== before?.threshold || after?.shortThreshold !== before?.shortThreshold;
         if (!wasEnrolled || changed || vp.state().session !== sessionBefore) save();
-        onChange({ enrolled: vp.enrolled(), needSeconds: vp.needSeconds(), pass, verdict: pass ? r.verdict : 'other', score: event.score ?? r.score });
+        onChange({ enrolled: vp.enrolled(), pass, verdict: pass ? r.verdict : 'other', score: event.score ?? r.score });
         return changed;
       },
     },

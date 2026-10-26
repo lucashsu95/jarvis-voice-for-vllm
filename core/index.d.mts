@@ -226,16 +226,16 @@ export const REMOTE_VOICEPRINT_MODEL: string;
 export interface VoiceprintGate { reference: number[]; threshold: number; shortThreshold: number; minSeconds: number }
 export function passesGate(gate: VoiceprintGate | null, score: number | null | undefined, sec: number): boolean;
 export interface VoiceprintSaved { model: string; at: number; enrolled: number[][]; recent: number[][]; pending: { v: number[]; sec: number }[]; session?: { at: number; score: number }[] }
-export interface VoiceprintChange { enrolled: boolean; needSeconds: number; pass: boolean; verdict: VoiceprintVerdict['verdict']; score: number | null }
+/** 每句判斷完：畫面只拿來說略過了幾句（聲紋在背景學，不顯示建立中、還要講幾秒） */
+export interface VoiceprintChange { enrolled: boolean; pass: boolean; verdict: VoiceprintVerdict['verdict']; score: number | null }
 export function createRemoteVoiceprint(opts: {
   store: { load(): VoiceprintSaved | null; save(saved: VoiceprintSaved): void; clear(): void };
   onChange?: (change: VoiceprintChange) => void;
   threshold?: number; minSeconds?: number; shortThreshold?: number;
-}): { enrolled(): boolean; needSeconds(): number; reset(): void; transcription: TranscriptionVoiceprint };
+}): { enrolled(): boolean; reset(): void; transcription: TranscriptionVoiceprint };
 export interface VoiceprintVerdict { pass: boolean; verdict: 'enrolling' | 'enrolled' | 'short' | 'mine' | 'other'; score: number | null; kept?: number }
 export function createVoiceprint(opts?: { state?: { enrolled?: number[][]; recent?: number[][]; pending?: { v: number[]; sec: number }[]; session?: { at: number; score: number }[] }; threshold?: number; minSeconds?: number; shortThreshold?: number; now?: () => number }): {
   enrolled(): boolean;
-  needSeconds(): number;
   judge(v: ArrayLike<number>, sec: number, opts?: { dryRun?: boolean }): VoiceprintVerdict;
   /** 這一場的長句門檻（同一場放行的長句滿 3 句後跟著分數往上提） */
   threshold(): number;
@@ -296,7 +296,7 @@ export function heardText(parts?: string[], previews?: string[]): string;
 
 // ---- 小框的階段（bubble.mjs）----
 export type BubbleState = 'hearing' | 'ignored' | 'working' | 'pasted' | 'command' | 'done' | 'failed' | 'nofield' | 'error' | 'hide';
-export interface BubbleEvent { state: BubbleState; text?: string; detail?: string; speaker?: '' | 'mine' | 'short' | 'enrolling'; enrollSeconds?: number }
+export interface BubbleEvent { state: BubbleState; text?: string; detail?: string; speaker?: '' | 'mine' | 'short' }
 export interface BubbleContent { title: string; body: string; tone: 'blue' | 'green' | 'orange' | 'red'; loud: boolean; busy: boolean; result: boolean; holdMs: number | null }
 export const BUBBLE_HOLD_MS: Record<string, number>;
 export const BUBBLE_MAX_CHARS: number;
