@@ -50,6 +50,25 @@ export function runCommand(input: { screen: ScreenAdapter; decider: Decider; log
   onStep?: (step: CommandStep) => void; maxSteps?: number }): Promise<CommandResult>;
 export function messageBox(list: ScreenElement[], searchText?: string): ScreenElement | null;
 
+// 操作代理（agent.mjs）：每一步看整頁結構，AI 從接頭宣告的工具挑一個做，做到畫面就是目標
+export interface AgentTool { name: string; args: string; about: string }
+export interface AgentCall { tool: string; args: Record<string, unknown>; why: string }
+export interface AgentScreen {
+  tools: AgentTool[];
+  snapshot(): Promise<{ text: string; labels?: Record<string, string> }>;
+  run(call: AgentCall): Promise<{ ok: boolean; note?: string }>;
+  settle?(): Promise<void>;
+}
+export interface AgentResult extends CommandResult { summary?: string }
+export const MAX_AGENT_STEPS: number;
+export const AGENT_TOOLS: Record<string, { args: string; about: string }>;
+export function standardTools(names: string[]): AgentTool[];
+export function agentPrompt(input: { goal: string; said?: string; context?: { app?: string }; screen: string; tools: AgentTool[]; done: string[] }): string;
+export function parseCall(raw: string, names: Set<string>): AgentCall | null;
+export function callTarget(call: AgentCall, labels?: Record<string, string>): string;
+export function runAgent(input: { screen: AgentScreen; complete: Complete; goal: string; said?: string; context?: { app?: string }; log?: (m: string) => void;
+  stopped?: () => boolean; onStep?: (step: CommandStep) => void; maxSteps?: number; timeoutMs?: number }): Promise<AgentResult>;
+
 export function rankTargets(input: { candidates: ScreenElement[]; window?: Frame; remembered?: { role: string; label?: string } | null }):
   { choice: ScreenElement | null; reason: string; sure: boolean; list: ScreenElement[] };
 export function usable(c: ScreenElement): boolean;

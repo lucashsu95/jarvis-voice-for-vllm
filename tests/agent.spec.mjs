@@ -1,0 +1,108 @@
+// 核心的操作代理（core/agent.mjs）：每一步看畫面、AI 挑工具、做、再看。畫面接頭與 AI 都傳假的進去。
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import * as core from '../core/index.mjs';
+
+// 假畫面：page 換了，snapshot 就換；run 記下做了什麼
+function fakeScreen(pages, start) {
+  let page = start;
+  const runs = [];
+  return {
+    runs,
+    page: () => page,
+    tools: [...core.standardTools(['click', 'scroll', 'back']), { name: 'open_page', args: 'page, params', about: '直接打開插件的頁面' }],
+    snapshot: async () => ({ text: pages[page].text, labels: pages[page].labels }),
+    run: async (call) => {
+      runs.push(call);
+      const next = pages[page].on?.(call);
+      if (next) page = next;
+      return { ok: true, ...(next ? {} : { note: '畫面沒變' }) };
+    },
+    settle: async () => {},
+  };
+}
+
+// 假 AI：照順序回，並記下每次看到的 user
+function fakeAi(replies) {
+  const seen = [];
+  return {
+    seen,
+    complete: async ({ user }) => {
+      seen.push(user);
+      const r = replies.shift();
+      return typeof r === 'string' ? r : JSON.stringify(r);
+    },
+  };
+}
+
+test('操作代理：照 AI 挑的工具一步步做，AI 說 done 就完成；小框收到每一步，做過的步驟交給下一步', async () => {
+  const screen = fakeScreen({
+    team: { text: '位置：台股投資部門\n[e1] 按鈕「搜尋」', labels: { e1: '按鈕「搜尋」' }, on: (c) => (c.tool === 'open_page' ? 'stock' : null) },
+    stock: { text: '位置：台積電 2330\n[e1] 分頁「看盤」（選中）\n[e2] 分頁「走勢」', labels: { e1: '分頁「看盤」', e2: '分頁「走勢」' }, on: (c) => (c.args.ref === 'e2' ? 'trend' : null) },
+    trend: { text: '位置：台積電 2330\n[e1] 分頁「看盤」\n[e2] 分頁「走勢」（選中）\n標題「當日走勢」', labels: {} },
+  }, 'team');
+  const ai = fakeAi([
+    { tool: 'open_page', args: { page: 'stock', params: { market: 'TWSE', symbol: '2330', name: '台積電' } }, why: '個股頁有走勢' },
+    { tool: 'click', args: { ref: 'e2' }, why: '切到走勢' },
+    { tool: 'done', args: { summary: '台積電的走勢' }, why: '到了' },
+  ]);
+  const steps = [];
+  const r = await core.runAgent({ screen, complete: ai.complete, goal: '打開台積電的走勢圖', said: '幫我打開台積電的走勢圖', context: { app: 'CubeLV' }, onStep: (s) => steps.push(s) });
+  assert.equal(r.ok, true);
+  assert.equal(r.summary, '台積電的走勢');
+  assert.equal(screen.page(), 'trend');
+  assert.deepEqual(steps.map((s) => [s.n, s.action]), [[1, 'open_page'], [2, 'click']]);
+  assert.equal(steps[1].target, '分頁「走勢」');
+  assert.equal(r.steps.length, 2);
+  // 第二步看得到第一步做了什麼，也看得到原話
+  assert.match(ai.seen[1], /<done>\n1\. open_page/);
+  assert.match(ai.seen[0], /<said>幫我打開台積電的走勢圖<\/said>/);
+  assert.match(ai.seen[0], /- scroll\(direction/);
+  assert.match(ai.seen[0], /- done\(summary/);
+});
+
+test('操作代理：AI 說 fail 就停並帶原因；工具不在清單裡連兩次就停；同一個畫面同一步做三次就停；做滿 maxSteps 停', async () => {
+  const still = { only: { text: '[e1] 按鈕「設定」', labels: { e1: '按鈕「設定」' } } };
+  const failed = await core.runAgent({ screen: fakeScreen(still, 'only'), complete: fakeAi([{ tool: 'fail', args: { reason: '沒有這個功能' }, why: '' }]).complete, goal: 'x' });
+  assert.deepEqual([failed.ok, failed.reason], [false, '沒有這個功能']);
+
+  const junk = await core.runAgent({ screen: fakeScreen(still, 'only'), complete: fakeAi(['好的我來點', { tool: 'fly', args: {}, why: '' }]).complete, goal: 'x' });
+  assert.match(junk.reason, /看不懂/);
+
+  const click = { tool: 'click', args: { ref: 'e1' }, why: '' };
+  const stuck = fakeScreen(still, 'only');
+  const loop = await core.runAgent({ screen: stuck, complete: fakeAi([click, click, click, click]).complete, goal: 'x' });
+  assert.match(loop.reason, /同一步做了三次/);
+  assert.equal(stuck.runs.length, 2);
+
+  let n = 0;
+  const moving = {
+    tools: core.standardTools(['click']),
+    snapshot: async () => ({ text: `第 ${n} 頁 [e1] 按鈕「下一頁」` }),
+    run: async () => { n += 1; return { ok: true }; },
+    settle: async () => {},
+  };
+  const capped = await core.runAgent({ screen: moving, complete: async () => JSON.stringify(click), goal: 'x', maxSteps: 3 });
+  assert.match(capped.reason, /做了 3 步/);
+});
+
+test('操作代理：按了停止就停，不再問 AI；AI 出錯回原因', async () => {
+  let asked = 0;
+  const screen = fakeScreen({ only: { text: '[e1] 按鈕「x」' } }, 'only');
+  const r = await core.runAgent({ screen, complete: async () => { asked += 1; return '{}'; }, goal: 'x', stopped: () => true });
+  assert.deepEqual([r.ok, asked], [false, 0]);
+  const broken = await core.runAgent({ screen, complete: async () => { throw new Error('逾時'); }, goal: 'x' });
+  assert.match(broken.reason, /AI 沒回下一步（逾時）/);
+});
+
+test('操作代理：parseCall 只收清單裡的工具；callTarget 把編號換成名字；小框認得新工具的動詞', () => {
+  const names = new Set(['click', 'scroll']);
+  assert.deepEqual(core.parseCall('好的：{"tool":"scroll","args":{"direction":"down"},"why":"往下找"}', names), { tool: 'scroll', args: { direction: 'down' }, why: '往下找' });
+  assert.equal(core.parseCall('{"tool":"delete_all","args":{}}', names), null);
+  assert.equal(core.parseCall('not json', names), null);
+  assert.equal(core.callTarget({ tool: 'click', args: { ref: 'e3' } }, { e3: '按鈕「走勢」' }), '按鈕「走勢」');
+  assert.equal(core.callTarget({ tool: 'scroll', args: { ref: 'e9', direction: 'down' } }, {}), 'e9 direction=down');
+  assert.equal(core.stepText({ n: 3, action: 'scroll', target: '清單 direction=down' }, 'zh'), '第 3 步：捲動 清單 direction=down');
+  assert.equal(core.stepText({ n: 1, action: 'open_page', target: 'page=stock' }, 'en'), 'Step 1: open page=stock');
+});

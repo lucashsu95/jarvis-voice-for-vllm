@@ -1,7 +1,7 @@
 // JarvisVoice 核心：一份給 Mac 小程式、CubeLV、平行沙盒共用的語音輸入邏輯。
 // 只放和平台無關的東西（不用 node: 模組、不碰檔案）：要看畫面、打模型、存東西，都由呼叫端傳接頭進來。
 //   - 服務接頭：complete({ system, user, schema }) → 模型吐的字；jev({ state, questions }) → answers（可以沒有）
-//   - 畫面接頭：elements({ limit, ocr })、act({ handle, action, text, x, y })
+//   - 畫面接頭：elements({ limit, ocr })、act({ handle, action, text, x, y })；操作代理另外用 tools、snapshot()、run({ tool, args })
 //   - 存放接頭：loadState、saveState、readVocab、writeVocab
 //   - 轉寫連線接頭：connect() → WebSocket 網址或 { url, headers, sessionUpdate }（OpenAI 直連、平行沙盒 control、CubeLV 後端）
 // 架構說明：jarvis-voice/docs/ARCHITECTURE.md
@@ -9,6 +9,7 @@
 export * from './editor.mjs';
 export * from './decide.mjs';
 export * from './commander.mjs';
+export { runAgent, standardTools, agentPrompt, parseCall, callTarget, AGENT_TOOLS, MAX_AGENT_STEPS } from './agent.mjs';
 export { usable, score as fieldScore, rankTargets } from './targeter.mjs';
 export { extractEdited, replacedChunks, createLearner } from './learn.mjs';
 export { AUTO_HEADER, splitVocabulary, plausibleTerm, score as vocabScore, createVocabAuto } from './vocab.mjs';
