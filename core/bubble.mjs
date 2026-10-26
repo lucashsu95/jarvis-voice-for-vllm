@@ -5,7 +5,7 @@
 //            聲紋還在背景學的時候不標、也不說還要講多久（core/voiceprint.mjs：沒有建立聲紋這一步）；
 //   ignored：聲紋不像你、這句不轉寫（text 是預覽聽到的字）；working：整理中（text 是轉寫原稿）；pasted：已貼上；
 //   command：語音指令（text 是目標，detail 是做到哪一步，見 stepText）；done：指令完成；failed：指令沒完成（detail 是原因）；
-//   nofield：沒有輸入框、這段沒貼上（detail 是 App 給的補充，例如 Mac 的「複製上一句」）；error：出錯（text 是原因）；hide：收起來。
+//   nofield：自己找也找不到可以寫的地方，這段沒寫（detail 是 App 給的補充，例如 Mac 的「複製上一句」）；error：出錯（text 是原因）；hide：收起來。
 // tone：blue 聽著／整理中、green 已貼上／完成、orange 沒貼上／沒完成、red 出錯（Mac 畫成左邊的色條）。
 // loud：標題要醒目（沒貼上、沒完成、出錯）；busy：標題旁轉一個小圈；result：結果（放游標上面、寬度重新量）；
 // holdMs：顯示多久就收（null＝一直留著，聽著、整理中、指令做到一半；App 自己在很久沒新消息時收）。
@@ -26,7 +26,8 @@ const TEXT = {
   command: ['語音指令', 'Voice command', '音声コマンド'],
   done: ['指令完成', 'Command done', 'コマンド完了'],
   failed: ['指令沒完成', 'Command not done', 'コマンド未完了'],
-  nofield: ['游標不在輸入框，這段沒貼上', 'Not in a text field; nothing was pasted', '入力欄にカーソルがないため貼り付けていません'],
+  // 不提游標（10/26 使用者：手機上根本沒有游標；JarvisVoice 本來就會自己找框，找不到才說）
+  nofield: ['找不到可以寫進去的地方，這段沒寫', "Couldn't find a place to write this", '書き込める場所が見つからなかったため、書き込んでいません'],
   error: ['出錯了', 'Something went wrong', 'エラーが発生しました'],
   step: ['第 {n} 步：', 'Step {n}: ', 'ステップ {n}：'],
 };

@@ -265,7 +265,7 @@ function animFrame(kind) {
 
 // 選單列圖示要畫哪一種，以及滑鼠停上去的說明
 function look() {
-  if (flash && Date.now() < flash.until) return flash.kind === 'pasted' ? ['pasted', t('已貼上', 'Pasted')] : ['nofield', t('游標不在輸入框，沒貼', 'Not in a text field; nothing pasted')];
+  if (flash && Date.now() < flash.until) return flash.kind === 'pasted' ? ['pasted', t('已貼上', 'Pasted')] : ['nofield', t('找不到可以寫的地方，沒寫', "Couldn't find a place to write; nothing written")];
   if (view.state === 'listening') {
     if (hearing) return ['speaking', t('說話中', 'Hearing you')];
     if (working) return ['working', t('辨識中：轉寫與 AI 整理', 'Transcribing and cleaning up')];
