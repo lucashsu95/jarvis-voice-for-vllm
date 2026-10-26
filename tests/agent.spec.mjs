@@ -54,6 +54,13 @@ test('操作代理：照 AI 挑的工具一步步做，AI 說 done 就完成；�
   assert.equal(screen.page(), 'trend');
   assert.deepEqual(steps.map((s) => [s.n, s.action]), [[1, 'open_page'], [2, 'click']]);
   assert.equal(steps[1].target, '分頁「走勢」');
+  // 沒有編號的工具（打開頁面）照參數寫；接頭給 describe 就用它的（給人看的名字）
+  assert.match(steps[0].target, /page=stock/);
+  const named = fakeScreen({ only: { text: '[e1] 按鈕「x」' } }, 'only');
+  named.describe = (call) => (call.tool === 'open_page' ? '「台積電」' : null);
+  const shown = [];
+  await core.runAgent({ screen: named, complete: fakeAi([{ tool: 'open_page', args: { page: 'stock', params: {} }, why: '' }, { tool: 'done', args: {}, why: '' }]).complete, goal: 'x', onStep: (s) => shown.push(s.target) });
+  assert.deepEqual(shown, ['「台積電」']);
   assert.equal(r.steps.length, 2);
   // 第二步看得到第一步做了什麼、為什麼做，也看得到原話
   assert.match(ai.seen[1], /<done>\n1\. open_page .*（為了：個股頁有走勢） → 做了/);

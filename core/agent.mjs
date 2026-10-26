@@ -11,6 +11,7 @@
 //   screen.snapshot() → { text, labels }：text 是給 AI 看的整頁結構；labels 是編號 → 給人看的名字（小框寫做到哪一步用）
 //   screen.run({ tool, args }) → { ok, note }：做這一步；note 是做完的情形（例如「捲到底了」），寫進做過的步驟給 AI 看
 //   screen.settle()：等畫面穩定（沒給就等 SETTLE_MS）
+//   screen.describe(call)：這一步給人看的對象（小框寫「第 1 步：打開「台積電」」用）；沒給或回 null 就照 callTarget 寫
 
 export const MAX_AGENT_STEPS = 15;
 const SETTLE_MS = 600;
@@ -141,7 +142,7 @@ export async function runAgent({ screen, complete, goal, said = '', context = {}
       continue;
     }
     unreadable = 0;
-    const target = callTarget(call, view.labels);
+    const target = callTarget(call, view.labels); // 給 log 與 AI：參數照實寫
     log(`指令第 ${n} 步（${Date.now() - started} ms）：${call.tool}${target ? ` → ${target}` : ''}；${call.why}`);
     if (call.tool === 'done') return { ok: true, steps: done, summary: String(call.args.summary ?? call.why ?? '') };
     if (call.tool === 'fail') return { ok: false, reason: String(call.args.reason || call.why || '做不到'), steps: done };
@@ -153,7 +154,7 @@ export async function runAgent({ screen, complete, goal, said = '', context = {}
     recent.push(`${call.tool}:${target}`);
     const [a, b, c, d] = recent.slice(-4);
     if (d !== undefined && a === c && b === d && a !== b) return { ok: false, reason: '一直在兩步之間來回，停下來', steps: done };
-    onStep({ n, action: call.tool, target });
+    onStep({ n, action: call.tool, target: screen.describe?.(call) ?? target }); // 給人看：畫面上的名字，不寫參數
     let result;
     try {
       result = await screen.run(call);

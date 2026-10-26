@@ -58,6 +58,8 @@ export interface AgentScreen {
   snapshot(): Promise<{ text: string; labels?: Record<string, string> }>;
   run(call: AgentCall): Promise<{ ok: boolean; note?: string }>;
   settle?(): Promise<void>;
+  /** 這一步給人看的對象（小框用）；回 null 照 callTarget */
+  describe?(call: AgentCall): string | null;
 }
 export interface AgentResult extends CommandResult { summary?: string }
 export const MAX_AGENT_STEPS: number;
