@@ -18,9 +18,9 @@ export function editSegment(input: { complete: Complete; transcript: string; con
 
 export interface ScreenElement { handle: number; role: string; subrole?: string; label: string; value?: string; x: number; y: number; w: number; h: number; focused?: boolean; ocr?: boolean }
 export interface Frame { x?: number; y?: number; w?: number; h?: number; title?: string }
+/** 看畫面的接頭：游標在輸入框時判斷是不是指令（judgeInField）用 */
 export interface ScreenAdapter {
   elements(opts: { limit?: number; ocr?: 'never' | 'auto' | 'always' }): Promise<{ window: Frame; elements: ScreenElement[]; source?: string }>;
-  act(req: { handle?: number; action: 'press' | 'fill' | 'enter' | 'clickAt' | 'focus'; text?: string; x?: number; y?: number }): Promise<{ result: string }>;
 }
 export interface Decider {
   available(): boolean;
@@ -33,9 +33,7 @@ export function createDecider(service: () => { jev?: Jev | null; complete?: Comp
 export function intentQuestion(): Question;
 export function inFieldIntentQuestion(): Question;
 export function referenceQuestion(items: ScreenElement[], win?: Frame): Question;
-export function recipientQuestion(name: string): Question;
 export function fieldQuestions(candidates: ScreenElement[], win?: Frame): Record<string, Question>;
-export function stepQuestions(elements: ScreenElement[], win?: Frame): Record<string, Question>;
 export function describeElement(e: ScreenElement, win?: Frame): string;
 export function inFieldVerdict(answers: Record<string, Answer>, items: ScreenElement[]): { command: number; named: ScreenElement | null; isCommand: boolean };
 export const IN_FIELD_SURE: number;
@@ -43,12 +41,6 @@ export const IN_FIELD_NAMED: number;
 
 export interface CommandResult { ok: boolean; reason?: string; steps?: string[] }
 export interface CommandStep { n: number; action: string; target: string }
-export const MAX_COMMAND_STEPS: number;
-export function goalReached(goal: string, title: string, startTitle: string, doneSteps: number): boolean;
-export function runCommand(input: { screen: ScreenAdapter; decider: Decider; log?: (m: string) => void; switchApp?: (name: string) => Promise<boolean>;
-  goal: string; text?: string; message?: string; app?: string; context?: { app?: string }; stopped?: () => boolean;
-  onStep?: (step: CommandStep) => void; maxSteps?: number }): Promise<CommandResult>;
-export function messageBox(list: ScreenElement[], searchText?: string): ScreenElement | null;
 
 // 操作代理（agent.mjs）：每一步看整頁結構，AI 從接頭宣告的工具挑一個做，做到畫面就是目標
 export interface AgentTool { name: string; args: string; about: string }
@@ -70,6 +62,41 @@ export function parseCall(raw: string, names: Set<string>): AgentCall | null;
 export function callTarget(call: AgentCall, labels?: Record<string, string>): string;
 export function runAgent(input: { screen: AgentScreen; complete: Complete; goal: string; said?: string; context?: { app?: string }; log?: (m: string) => void;
   stopped?: () => boolean; onStep?: (step: CommandStep) => void; maxSteps?: number; timeoutMs?: number }): Promise<AgentResult>;
+
+// 操作代理的畫面接頭共用的那一半（agentScreen.mjs）：App 只讀畫面（read → 節點）、動手（act）；結構樹怎麼寫、編號、小框寫什麼都在核心
+export type AgentNode =
+  | { depth: number; kind: 'group'; role: string; name?: string }
+  | { depth: number; kind: 'heading' | 'text'; name: string }
+  | { depth: number; kind: 'scroll'; name?: string; states?: string[]; off?: boolean | string; target: unknown }
+  | { depth: number; kind: 'control'; role: string; name?: string; value?: string; states?: string[]; off?: boolean | string; target: unknown };
+export interface AgentStepResult { ok: boolean; note?: string }
+export interface AgentExtra {
+  tools: AgentTool[];
+  /** null＝不是它的工具，照標準工具做 */
+  run(call: AgentCall): Promise<AgentStepResult | null>;
+  describe?(call: AgentCall): string | null;
+}
+export interface CreatedAgentScreen extends AgentScreen {
+  describe(call: AgentCall): string | null;
+  /** 上一次 snapshot 這個編號對到的東西 */
+  targetOf(ref: string): unknown;
+}
+export function createAgentScreen<T = unknown>(input: {
+  tools: AgentTool[];
+  read: () => AgentNode[] | Promise<AgentNode[]>;
+  act: (call: AgentCall, target: T | null) => AgentStepResult | Promise<AgentStepResult>;
+  header?: () => string | string[] | Promise<string | string[]>;
+  extra?: AgentExtra;
+  settle?: () => Promise<void>;
+  maxRefs?: number;
+  maxChars?: number;
+  maxTextLines?: number;
+}): CreatedAgentScreen;
+export function writeTree(nodes: AgentNode[], opts?: { header?: string | string[]; maxRefs?: number; maxChars?: number; maxTextLines?: number }):
+  { text: string; labels: Record<string, string>; refs: Map<string, unknown> };
+export function describeCall(call: AgentCall, labels?: Record<string, string>): string;
+export function keyName(key: unknown): string;
+export function missingRef(ref: string): AgentStepResult;
 
 export function rankTargets(input: { candidates: ScreenElement[]; window?: Frame; remembered?: { role: string; label?: string } | null }):
   { choice: ScreenElement | null; reason: string; sure: boolean; list: ScreenElement[] };

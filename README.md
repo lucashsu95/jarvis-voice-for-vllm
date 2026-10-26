@@ -101,16 +101,15 @@ Dictating an hour a day, AI cleanup costs less than US$1 a month.
 ## Auto-focus and voice commands (layer 3)
 
 - **Auto-focus**: when the cursor isn't in a text field, the decision maker picks one of the fields in the window (search boxes and the address bar included), focuses it and writes there.
-- **Voice commands** (needs AI cleanup): say "open the TSMC stock page", "open settings", "search for Foxconn" or "switch to the such-and-such session", and it operates the frontmost app:
-  - At each step it lists the buttons, links and text fields on screen, and the decision maker picks what to click, where to type, or whether to press Enter.
-  - It keeps going until the decision maker says it's done or can't be done; it stops if the decision maker's confidence is too low. "Pause listening" also stops it.
+- **Voice commands** (needs AI cleanup): say "open the TSMC stock page", "open settings", "tell BU hello on LINE" or "open YouTube", and it operates your apps (the same agent as CubeLV's voice commands):
+  - At each step it reads the whole screen of the frontmost app (the Accessibility tree: dialogs, toolbars and lists level by level, with a number and a state for everything you can use), and the AI picks one tool: click, right-click, type, press a key (shortcuts like cmd+l too), scroll, pick from a pop-up menu, use the menu bar, switch apps or open a URL. Nothing is hard-coded, such as "search first"; the AI decides from the screen.
+  - It keeps going until the screen shows what you asked for, or the AI has tried a few ways and can't; it stops after 15 steps, when it goes back and forth between two steps, or repeats the same step three times. "Pause listening" also stops it. The bubble shows each step and the name of what it clicked.
   - When the cursor is in a text field (for example Claude's prompt box), Jev looks at what's on screen to decide: if it's clearly an instruction to operate the screen, or it names something on screen, it's treated as a command; something like "switch to another branch and run the tests again", meant for the AI, is typed as usual. For short, ambiguous phrases, start with "command, …" and it's always treated as a command.
-- **Message someone**: say "tell BU hello" or "tell Mom I'll be late" and it follows fixed steps: type the name into the search box → click the first result below it that contains the name → check the conversation title to confirm it's that person → write the message into the message box, **without sending**. If the first result isn't that person, it stops; it never tries other results or writes into the wrong conversation.
-- **Apps it can't read** (LINE, for example: Accessibility only exposes the search box and the message box): it captures the frontmost window and reads the text and positions with macOS's built-in text recognition (on your Mac; the image is never saved or sent), and uses them as context for the AI and as things it can click. This needs one more permission, Screen Recording; apps it can read are never captured.
+- **Message someone**: say "tell BU hello" or "tell Mom I'll be late"; the same agent handles it, with the message in the goal, and the AI finds the conversation on screen and writes the message.
+- **Apps it can't read** (LINE, for example: the chat list is rows without names): it captures the frontmost window and reads the text and positions with macOS's built-in text recognition (on your Mac; the image is never saved or sent); rows without names are named by the text inside them, and the rest of the text becomes positions it can click. This needs one more permission, Screen Recording; apps it can read are never captured.
 - **Decision maker**:
   - With a Jev key (`jev`), Jev decides, about 0.2 s per decision.
-  - On screens read from a screenshot, when Jev isn't sure, or when a step didn't change the screen, that step goes to your AI provider instead (about 1 s); if the same step still doesn't change anything, it stops.
-  - Without Jev, your AI provider decides everything.
+  - Jev decides whether what you said is a command and which text field to write into; without Jev, your AI provider does. Each step of a voice command is decided by your AI provider.
 
 ## Transcription engines
 
@@ -213,7 +212,7 @@ If you'd rather not get and look after your own keys, you can use a CubeLV accou
 - `bin/cubelv.mjs`, `bin/cubelv-login.mjs`: Sign in with CubeLV (browser authorization, tokens kept in the Keychain and refreshed automatically, CubeLV transcription and AI cleanup).
 - `bin/ax-agent.js`: the long-running Accessibility helper (JXA). Reads context and on-screen text, finds and focuses text fields, pastes (save clipboard → Cmd+V → restore, only to the frontmost app), selects what it just pasted to replace it, and lists and operates on-screen controls.
 - `core/`: the shared core, one copy used by this app, CubeLV and ParallelSandbox (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)); `scripts/sync-core.sh` copies it into other projects.
-- `bin/editor.mjs`: AI cleanup. `bin/ai-check.mjs`: checks that AI cleanup and the decision maker are set up. `bin/decide.mjs`: layer 3 decisions (Jev). `bin/commander.mjs`: voice commands. `bin/targeter.mjs`: rules for picking a text field. `bin/learn.mjs`: learning from your corrections. `bin/vocab-auto.mjs`: automatic vocabulary updates and the cap.
+- `bin/editor.mjs`: AI cleanup. `bin/ai-check.mjs`: checks that AI cleanup and the decision maker are set up. `bin/decide.mjs`: layer 3 decisions (Jev). `bin/agent-screen.mjs`: voice commands (reads the frontmost app's screen for the shared agent and carries out its steps). `bin/targeter.mjs`: rules for picking a text field. `bin/learn.mjs`: learning from your corrections. `bin/vocab-auto.mjs`: automatic vocabulary updates and the cap.
 - `bin/vocab-test.mjs`: vocabulary test (see [AI_SETUP.md](AI_SETUP.md)).
 - `site/`: the jarvis-voice.com website, published to GitHub Pages by GitHub Actions on every push to main.
 

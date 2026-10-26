@@ -6,7 +6,7 @@
 // 迴圈自己只在這些時候停：按了停止、做了 maxSteps 步、同一個畫面同一步做了三次、在兩步之間來回（A、B、A、B）、
 // AI 連兩次回不出看得懂的下一步。
 
-// screen 是 App 的畫面接頭：
+// screen 是 App 的畫面接頭（用 agentScreen.mjs 的 createAgentScreen 組：App 只給讀畫面、動手，結構樹與小框的寫法共用）：
 //   screen.tools：[{ name, args, about }]，這個 App 能用的工具（標準的見 AGENT_TOOLS，App 可以加自己的，例如直接打開某一頁）
 //   screen.snapshot() → { text, labels }：text 是給 AI 看的整頁結構；labels 是編號 → 給人看的名字（小框寫做到哪一步用）
 //   screen.run({ tool, args }) → { ok, note }：做這一步；note 是做完的情形（例如「捲到底了」），寫進做過的步驟給 AI 看

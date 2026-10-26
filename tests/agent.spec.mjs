@@ -129,3 +129,92 @@ test('操作代理：parseCall 只收清單裡的工具；callTarget 把編號�
   assert.equal(core.stepText({ n: 1, action: 'open_page', target: 'page=stock' }, 'en'), 'Step 1: open page=stock');
   assert.equal(core.stepText({ n: 2, action: 'click', target: '「財務」' }, 'zh'), '第 2 步：點「財務」');
 });
+
+// 畫面接頭共用的那一半（core/agentScreen.mjs）：App 只給節點與動手，結構樹寫法與 CubeLV 現在看到的一行一行一樣
+test('畫面接頭：節點寫成結構樹（層、編號、狀態、畫面外、搜尋框）；同一段字只列一次；太多編號先丟畫面外的', async () => {
+  const nodes = [
+    { depth: 0, kind: 'group', role: '側欄／導覽' },
+    { depth: 1, kind: 'control', role: '按鈕', name: '自選報價', off: '側欄收起來', target: 'side' },
+    { depth: 1, kind: 'heading', name: '台積電 2330' },
+    { depth: 1, kind: 'group', role: '分頁列' },
+    { depth: 2, kind: 'control', role: '分頁', name: '看盤', states: ['選中'], target: 'tab1' },
+    { depth: 2, kind: 'control', role: '分頁', name: '走勢', target: 'tab2' },
+    { depth: 1, kind: 'text', name: '收盤 1,045 元' },
+    { depth: 1, kind: 'text', name: '收盤 1,045 元' },
+    { depth: 1, kind: 'scroll', name: '新聞', states: ['下面還有'], target: 'news' },
+    { depth: 2, kind: 'control', role: '按鈕', name: '更早的新聞', off: true, target: 'old' },
+    { depth: 1, kind: 'control', role: '輸入框', name: '搜尋...', value: 'As', states: ['搜尋框'], target: 'search' },
+    { depth: 1, kind: 'control', role: '按鈕', target: 'icon' },
+  ];
+  const view = core.writeTree(nodes, { header: ['現在在：側欄分頁「資料」', ''] });
+  assert.deepEqual(view.text.split('\n'), [
+    '現在在：側欄分頁「資料」',
+    '側欄／導覽',
+    '  [e1] 按鈕「自選報價」（側欄收起來）',
+    '  標題「台積電 2330」',
+    '  分頁列',
+    '    [e2] 分頁「看盤」（選中）',
+    '    [e3] 分頁「走勢」',
+    '  「收盤 1,045 元」',
+    '  [e4] 可捲動區「新聞」（下面還有）',
+    '    [e5] 按鈕「更早的新聞」（畫面外）',
+    '  [e6] 輸入框「搜尋...」，裡面是「As」（搜尋框）',
+    '  [e7] 按鈕「沒有名字」',
+  ]);
+  assert.deepEqual(view.labels, { e1: '按鈕「自選報價」', e2: '分頁「看盤」', e3: '分頁「走勢」', e4: '可捲動區「新聞」', e5: '按鈕「更早的新聞」', e6: '輸入框「搜尋...」', e7: '按鈕「沒有名字」' });
+  assert.equal(view.refs.get('e6'), 'search');
+  const trimmed = core.writeTree(nodes, { maxRefs: 5 });
+  assert.doesNotMatch(trimmed.text, /自選報價|更早的新聞/); // 畫面外的先丟
+  assert.match(trimmed.text, /\[e4\] 輸入框「搜尋...」/);
+  assert.match(core.writeTree(nodes, { maxChars: 60 }).text, /（後面還有 \d+ 行，太長沒列）$/);
+});
+
+test('畫面接頭：run 先給 App 自己的工具；ref 對不到先擋；不在清單的工具不做；小框寫畫面上的名字', async () => {
+  let page = 1;
+  const acts = [];
+  const screen = core.createAgentScreen({
+    tools: core.standardTools(['click', 'fill', 'press_key', 'scroll']),
+    read: () => [{ depth: 0, kind: 'control', role: '按鈕', name: page === 1 ? '財務' : '新聞', target: `p${page}` }, { depth: 0, kind: 'control', role: '輸入框', name: '代號', target: 'field' }],
+    act: (call, target) => { acts.push([call.tool, target]); page += 1; return { ok: true }; },
+    header: () => '現在在：個股頁',
+    extra: { tools: [{ name: 'go', args: 'ref', about: '直接去' }], run: async (call) => (call.tool === 'go' ? { ok: true, note: 'app' } : null), describe: (call) => (call.tool === 'go' ? '「市集」' : null) },
+  });
+  assert.deepEqual(screen.tools.map((t) => t.name), ['click', 'fill', 'press_key', 'scroll', 'go']);
+  const view = await screen.snapshot();
+  assert.equal(view.text.split('\n')[0], '現在在：個股頁');
+  assert.deepEqual(await screen.run({ tool: 'click', args: { ref: 'e1' }, why: '' }), { ok: true });
+  assert.deepEqual(acts, [['click', 'p1']]);
+  assert.deepEqual(await screen.run({ tool: 'press_key', args: { key: 'esc' }, why: '' }), { ok: true });
+  assert.deepEqual(acts.at(-1), ['press_key', null]);
+  assert.match((await screen.run({ tool: 'click', args: { ref: 'e9' }, why: '' })).note, /找不到 e9，畫面可能換了/);
+  assert.deepEqual(await screen.run({ tool: 'go', args: { ref: 'd1' }, why: '' }), { ok: true, note: 'app' });
+  assert.equal((await screen.run({ tool: 'teleport', args: {}, why: '' })).ok, false);
+  assert.equal(screen.targetOf('e2'), 'field');
+  // 小框：畫面上的名字，不寫編號與參數
+  assert.equal(screen.describe({ tool: 'click', args: { ref: 'e1' }, why: '' }), '「財務」');
+  assert.equal(screen.describe({ tool: 'fill', args: { ref: 'e2', text: '2330' }, why: '' }), '「代號」：「2330」');
+  assert.equal(screen.describe({ tool: 'scroll', args: { direction: 'down' }, why: '' }), '整頁（往下）');
+  assert.equal(screen.describe({ tool: 'press_key', args: { key: 'esc' }, why: '' }), 'Escape');
+  assert.equal(screen.describe({ tool: 'go', args: { ref: 'd1' }, why: '' }), '「市集」');
+  assert.equal(core.keyName('enter'), 'Enter');
+  assert.equal(core.keyName('cmd+l'), 'cmd+l');
+});
+
+test('畫面接頭接上 runAgent：AI 每一步看到核心寫的結構樹，照編號做到完成', async () => {
+  let page = 'home';
+  const screen = core.createAgentScreen({
+    tools: core.standardTools(['click']),
+    read: () => (page === 'home'
+      ? [{ depth: 0, kind: 'control', role: '按鈕', name: '設定', target: 'settings' }]
+      : [{ depth: 0, kind: 'heading', name: '設定' }, { depth: 0, kind: 'control', role: '按鈕', name: '通知', target: 'notify' }]),
+    act: (call, target) => { if (target === 'settings') page = 'settings'; return { ok: true }; },
+    settle: async () => {},
+  });
+  const ai = fakeAi([{ tool: 'click', args: { ref: 'e1' }, why: '進設定' }, { tool: 'done', args: { summary: '設定頁' }, why: '到了' }]);
+  const steps = [];
+  const r = await core.runAgent({ screen, complete: ai.complete, goal: '打開設定', onStep: (s) => steps.push(s) });
+  assert.equal(r.ok, true);
+  assert.match(ai.seen[0], /\[e1\] 按鈕「設定」/);
+  assert.match(ai.seen[1], /標題「設定」/);
+  assert.deepEqual(steps.map((s) => [s.action, s.target]), [['click', '「設定」']]);
+});

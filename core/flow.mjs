@@ -72,7 +72,7 @@ export async function judgeUtterance({ raw, inField, edit, judge = null, intent 
 }
 
 // 整理完要做什麼。result：judgeUtterance 的結果（AI 整理關著是 null）。
-//   command：在畫面上做（runCommand）；delete_last：刪掉剛剛寫的那段；revert_last：換回原文；
+//   command：在畫面上做（操作代理 runAgent）；delete_last：刪掉剛剛寫的那段；revert_last：換回原文；
 //   filler：整段只有語氣詞，不寫；write：寫字（text 是要寫的字，failed 有值＝整理失敗照原稿）。
 export function planOutput({ raw, result }) {
   if (result?.failed) return { kind: 'write', text: raw, mode: 'insert', ai: false, failed: result.failed };

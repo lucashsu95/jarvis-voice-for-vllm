@@ -99,22 +99,19 @@ test('核心的決策器：有 Jev 用 Jev；Jev 拿不準時改問 AI；都沒�
   await assert.rejects(core.createDecider(() => ({})).decide({}, { intent: core.intentQuestion() }), /做不了決策/);
 });
 
-test('核心的指令：畫面接頭傳假的進去，一步步做到完成', async () => {
+test('核心的操作代理：App 只給讀畫面、動手，結構樹與每一步都在核心', async () => {
   let step = 0;
-  const screens = [
-    [{ handle: 1, role: 'AXButton', label: '設定', x: 0, y: 0, w: 50, h: 20 }],
-    [{ handle: 2, role: 'AXButton', label: '通知', x: 0, y: 0, w: 50, h: 20 }],
-  ];
   const acts = [];
-  const screen = {
-    elements: async () => ({ window: { title: `w${step}` }, elements: screens[Math.min(step, 1)] }),
-    act: async (req) => { acts.push(req); step += 1; return { result: 'ok' }; },
-  };
-  const plan = ['click', 'done'];
-  const decider = { engine: () => '假', canEscalate: () => false, decide: async (state) => ({ action: { choice: plan[state.done_steps.length], confidence: 0.9 }, target: { choice: 'e0', confidence: 0.9 } }) };
-  const r = await core.runCommand({ screen, decider, goal: '打開設定' });
+  const screen = core.createAgentScreen({
+    tools: core.standardTools(['click']),
+    read: () => [{ depth: 0, kind: 'control', role: '按鈕', name: step ? '通知' : '設定', target: step ? 2 : 1 }],
+    act: (call, target) => { acts.push(target); step += 1; return { ok: true }; },
+    settle: async () => {},
+  });
+  const replies = [{ tool: 'click', args: { ref: 'e1' }, why: '進設定' }, { tool: 'done', args: { summary: '設定' }, why: '到了' }];
+  const r = await core.runAgent({ screen, complete: async () => JSON.stringify(replies.shift()), goal: '打開設定' });
   assert.equal(r.ok, true);
-  assert.deepEqual(acts, [{ handle: 1, action: 'press' }]);
+  assert.deepEqual(acts, [1]);
 });
 
 test('核心的詞彙自動更新：存放接頭傳記憶體版也能用', () => {
@@ -127,11 +124,13 @@ test('核心的詞彙自動更新：存放接頭傳記憶體版也能用', () =>
   assert.ok(state.terms.JarvisVoice);
 });
 
-test('同步腳本：複製核心並在每個檔案寫上來源 commit', async () => {
+test('同步腳本：複製核心並在每個檔案寫上來源 commit；核心已經拿掉的同步檔一起刪，別人的檔案不動', async () => {
   const { execFileSync } = await import('node:child_process');
-  const { mkdtempSync, readFileSync: read, readdirSync: list } = await import('node:fs');
+  const { mkdtempSync, readFileSync: read, readdirSync: list, writeFileSync: write } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const dest = mkdtempSync(join(tmpdir(), 'jarvis-core-'));
+  write(join(dest, 'commander.mjs'), '// 從 jarvis-voice core@abc1234 同步（舊的）\nexport {};\n');
+  write(join(dest, 'mine.mjs'), 'export const mine = 1;\n');
   try {
     execFileSync(join(import.meta.dirname, '..', 'scripts', 'sync-core.sh'), [dest], { stdio: 'pipe' });
   } catch (err) {
@@ -141,6 +140,8 @@ test('同步腳本：複製核心並在每個檔案寫上來源 commit', async (
   }
   const sha = read(join(dest, 'CORE_COMMIT'), 'utf8').trim();
   assert.ok(list(dest).includes('index.mjs'));
+  assert.ok(!list(dest).includes('commander.mjs'), '核心已經沒有的同步檔要刪');
+  assert.ok(list(dest).includes('mine.mjs'), '不是同步過去的檔案不動');
   assert.match(read(join(dest, 'editor.mjs'), 'utf8'), new RegExp(`^// 從 jarvis-voice core@${sha} 同步`));
   const synced = await import(join(dest, 'index.mjs'));
   assert.equal(typeof synced.editSegment, 'function');

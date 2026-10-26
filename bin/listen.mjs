@@ -31,10 +31,10 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createAx } from './ax.mjs';
-import { runCommand } from './commander.mjs';
+import { createMacAgentScreen } from './agent-screen.mjs';
 import { TurnSplitter, BATCH_BYTES, SAMPLE_RATE, findFfmpeg } from './common.mjs';
 import { STATE_DIR, aiAvailable, aiKey, appAllowed, configMtime, cubelvAccount, isLiveModel, loadConfig, styleFor } from './config.mjs';
-import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment } from './editor.mjs';
+import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment, service } from './editor.mjs';
 import { DEFAULT_URLS } from '../core/providers.mjs';
 import { createBatchEngine } from './engines/batch.mjs';
 import { createLocalEngine, createPreviewer } from './engines/local.mjs';
@@ -50,6 +50,7 @@ import { finishText, isSpeech, withSpacing } from './text.mjs';
 import { judgeInField, judgeUtterance, pickTarget, planOutput } from '../core/flow.mjs';
 import { createSegmenter, heardText } from '../core/segment.mjs';
 import { bubbleContent, stepText } from '../core/bubble.mjs';
+import { runAgent } from '../core/agent.mjs';
 
 const LOCK = join(STATE_DIR, 'listener.lock');
 const PAUSED = join(STATE_DIR, 'paused');
@@ -887,33 +888,46 @@ const openApp = (name) => new Promise((resolve) => {
   execFile('/usr/bin/open', ['-a', name], { timeout: 5000 }, (err) => resolve(!err));
 });
 
-// 第三層（指令）：直接操作 app
+// 第三層（指令）：交給核心的操作代理（core/agent.mjs 的 runAgent，CubeLV 同一套）：每一步讀最前面那個 app 的畫面
+// （bin/agent-screen.mjs），AI 挑工具做，做到畫面就是目標。傳訊息給某人也一樣，要寫的訊息、要去的 app 放進目標裡
 async function runVoiceCommand(result, raw, front, ctx) {
-  log(`指令：${result.goal}${result.text ? `（要搜尋「${result.text}」）` : ''}${result.message ? `（要寫「${result.message}」，不送出）` : ''}${result.app ? `，先切到 ${result.app}` : ''}`);
+  const goal = [
+    result.goal,
+    result.app && !result.goal.includes(result.app) ? `（在 ${result.app}）` : '',
+    result.message ? `（要寫的訊息：${result.message}）` : '',
+  ].join('');
+  log(`指令：${goal}`);
   if (dryPaste) {
-    emit({ type: 'command', goal: result.goal, text: result.text, app: result.app, dry: true });
+    emit({ type: 'command', goal: result.goal, app: result.app, message: result.message, dry: true });
     return '';
   }
   bubble('command', { text: result.goal });
+  const ai = service(aiSettings());
   let outcome;
   try {
-    outcome = await runCommand({
-      ax, decider, log, frontApp, openApp, goal: result.goal, text: result.text, message: result.message, app: result.app, context: { app: ctx?.app ?? '' },
+    outcome = await runAgent({
+      screen: createMacAgentScreen({ ax, frontApp, openApp, log }),
+      complete: (req) => ai.complete(req),
+      goal,
+      said: raw,
+      context: { app: ctx?.app ?? '' },
       stopped: () => existsSync(PAUSED),
-      // 小框跟著顯示做到哪一步（核心 stepText：「第 1 步：點 按鈕「Gmail」」）
+      // 小框跟著顯示做到哪一步（核心 stepText：「第 1 步：點「Gmail」」）
       onStep: (step) => bubble('command', { text: result.goal, detail: stepText(step, ZH ? 'zh' : 'en') }),
+      log,
     });
   } catch (err) {
     outcome = { ok: false, reason: err.message, steps: [] };
   }
   ctxCache = null;
-  log(outcome.ok ? `指令完成：${outcome.steps.join(' → ') || '畫面本來就是'}` : `指令沒完成：${outcome.reason}`);
+  const steps = outcome.steps ?? [];
+  log(outcome.ok ? `指令完成${outcome.summary ? `（${outcome.summary}）` : ''}：${steps.join(' → ') || '畫面本來就是'}` : `指令沒完成：${outcome.reason}`);
   hudWrite(outcome.ok ? 'pasted' : 'nofield');
   bubble(outcome.ok ? 'done' : 'failed', { text: result.goal, detail: outcome.ok ? '' : outcome.reason });
   writeLast(raw);
-  emit({ type: 'command', goal: result.goal, ok: outcome.ok, steps: outcome.steps ?? [], reason: outcome.reason ?? '' });
+  emit({ type: 'command', goal: result.goal, ok: outcome.ok, steps, reason: outcome.reason ?? '', summary: outcome.summary ?? '' });
   if (config.ai.history) {
-    appendHistory({ app: ctx?.app ?? '', bundle: front.bundle, raw, mode: 'command', goal: result.goal, ok: outcome.ok, steps: outcome.steps ?? [] });
+    appendHistory({ app: ctx?.app ?? '', bundle: front.bundle, raw, mode: 'command', goal: result.goal, ok: outcome.ok, steps });
   }
   return '';
 }

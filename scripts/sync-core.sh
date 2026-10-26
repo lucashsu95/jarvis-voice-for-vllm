@@ -12,6 +12,11 @@ if [[ -n "$(git -C "$DIR" status --porcelain -- core)" ]]; then
   exit 1
 fi
 mkdir -p "$DEST"
+# 核心已經拿掉的檔案：目標裡由這個腳本同步過去的（開頭有同步標記）一起刪掉
+for f in "$DEST"/*.mjs "$DEST"/*.mts; do
+  [[ -e "$f" && ! -e "$DIR/core/$(basename "$f")" ]] || continue
+  if head -1 "$f" | grep -q '從 jarvis-voice core@'; then rm "$f"; echo "刪掉 $(basename "$f")（核心已經沒有）"; fi
+done
 for f in "$DIR"/core/*.mjs "$DIR"/core/index.d.mts; do
   name="$(basename "$f")"
   {

@@ -129,26 +129,6 @@ test('小框：每個階段的標題、內文、顏色、停多久；三種語�
   assert.equal(core.bubbleContent({ state: 'hide' }), null);
   assert.equal(core.bubbleContent({ state: 'hearing', text: '字'.repeat(100) }).body.length, 85);
   assert.equal(core.stepText({ n: 2, action: 'click', target: '按鈕「行事曆」（上左）' }, 'zh'), '第 2 步：點 按鈕「行事曆」（上左）');
-  assert.equal(core.stepText({ n: 1, action: 'enter' }, 'en'), 'Step 1: press Enter');
-});
-
-test('指令：每一步通知 onStep；換到目標講的那一頁就算完成；做滿 maxSteps 步就停', async () => {
-  let title = '首頁';
-  const screen = {
-    elements: async () => ({ window: { x: 0, y: 0, w: 400, h: 800, title }, elements: [{ handle: 1, role: 'AXButton', label: '行事曆', x: 0, y: 100, w: 100, h: 40 }] }),
-    act: async () => { title = '行事曆'; return { result: 'ok' }; },
-  };
-  const decider = { engine: () => 'AI', canEscalate: () => false, decide: async () => ({ action: { choice: 'click', confidence: 0.9 }, target: { choice: 'e0', confidence: 0.9 } }) };
-  const steps = [];
-  const r = await core.runCommand({ screen, decider, goal: '打開行事曆', onStep: (s) => steps.push(s) });
-  assert.equal(r.ok, true);
-  assert.deepEqual(steps.map((s) => [s.n, s.action]), [[1, 'click']]);
-  assert.match(steps[0].target, /行事曆/);
-  assert.equal(core.goalReached('打開台積電（2330）的個股頁', '台積電 2330', '首頁', 1), true);
-  assert.equal(core.goalReached('打開行事曆', '行事曆', '行事曆', 1), false);
-  let n = 0;
-  const busy = { elements: async () => ({ window: { title: `頁 ${n}` }, elements: [{ handle: 1, role: 'AXButton', label: `按鈕${n}`, x: 0, y: 0, w: 10, h: 10 }] }), act: async () => { n += 1; return { result: 'ok' }; } };
-  const capped = await core.runCommand({ screen: busy, decider, goal: '一直點', maxSteps: 2 });
-  assert.equal(capped.ok, false);
-  assert.match(capped.reason, /做了 2 步/);
+  assert.equal(core.stepText({ n: 1, action: 'press_key', target: 'Enter' }, 'en'), 'Step 1: press Enter');
+  assert.equal(core.stepText({ n: 3, action: 'open_app', target: '「LINE」' }, 'zh'), '第 3 步：打開「LINE」');
 });

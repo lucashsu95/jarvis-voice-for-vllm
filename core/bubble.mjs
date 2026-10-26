@@ -33,8 +33,6 @@ const TEXT = {
 const VERBS = {
   click: ['點', 'click', 'クリック'],
   fill: ['填字到', 'type into', '入力'],
-  enter: ['按 Enter', 'press Enter', 'Enter を押す'],
-  write: ['寫訊息', 'write the message', 'メッセージを書く'],
   long_press: ['長按', 'long-press', '長押し'],
   press_key: ['按', 'press', '押す'],
   scroll: ['捲動', 'scroll', 'スクロール'],
@@ -44,8 +42,10 @@ const VERBS = {
   wait: ['等畫面載入', 'wait', '読み込みを待つ'],
   go: ['打開', 'open', '開く'],
   open_page: ['打開', 'open', '開く'],
-  done: ['完成', 'done', '完了'],
-  stuck: ['做不到', 'can’t do it', 'できません'],
+  right_click: ['按右鍵', 'right-click', '右クリック'],
+  menu: ['選選單', 'choose menu', 'メニューを選ぶ'],
+  open_app: ['打開', 'open', '開く'],
+  open_url: ['打開', 'open', '開く'],
 };
 
 const index = (lang) => (/^zh/i.test(lang ?? '') ? 0 : /^ja/i.test(lang ?? '') ? 2 : 1);
@@ -53,7 +53,7 @@ const pick = (row, lang, n) => row[index(lang)].replace('{n}', String(n ?? ''));
 
 export const clipHead = (text, max = BUBBLE_MAX_CHARS) => (text.length > max ? `…${text.slice(-max)}` : text);
 
-// 指令做到哪一步（小框 command 的 detail）：runCommand 的 onStep({ n, action, target }) → 「第 1 步：點 按鈕「Gmail」（上左）」
+// 指令做到哪一步（小框 command 的 detail）：runAgent 的 onStep({ n, action, target }) → 「第 1 步：點「Gmail」」
 export function stepText({ n, action, target = '' }, lang = 'zh') {
   const verb = VERBS[action] ? pick(VERBS[action], lang) : action;
   // 中文名字用引號包起來時直接接在動詞後面（點「財務」），其他照舊空一格（點 按鈕「行事曆」、click e3）

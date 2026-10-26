@@ -1,7 +1,7 @@
 // JarvisVoice 核心：第三層的快速決策。題目與門檻都在這裡；誰來回答由呼叫端傳進來：
 //   jev({ state, questions })：TypeSafe 的 System One 模型 Jev（只在給定選項裡挑、給機率，一次約 0.2 秒）
 //   complete({ system, user })：一般 LLM（沒有 Jev、或 Jev 拿不準時用，約 1 秒）
-// 用在：這段話是「要打的字」還是「要操作 app 的指令」、游標不在輸入框時寫進哪個框、指令每一步點哪裡、寫訊息前確認對象。
+// 用在：這段話是「要打的字」還是「要操作 app 的指令」、游標不在輸入框時寫進哪個框。指令怎麼做由操作代理（agent.mjs）每一步問 AI。
 
 // 沒有 Jev：把同樣的 state 和問題交給 LLM，要它照格式回答
 async function askLlm({ complete, state, questions, timeoutMs = 8000 }) {
@@ -96,42 +96,11 @@ export function inFieldVerdict(answers, items) {
   return { command, named, isCommand: command >= IN_FIELD_SURE || (command >= IN_FIELD_NAMED && !!named) };
 }
 
-// 寫訊息前確認：現在打開的對話是不是和這個人的
-export const recipientQuestion = (name) => ({
-  type: 'noul',
-  instructions: `看 \`screen\`（目前畫面，包括截圖認出來的字），現在打開的對話（看對話區上方的標題）是不是和「${name}」這個人的對話？標題可以多了表情符號、大小寫不同或是暱稱的疊字；但只是另一個名字裡剛好包含它（例如找「BU」時的「Bubu科技有限公司」）、群組、或只是左邊清單裡有這個名字，都不算。`,
-});
-
 // 游標不在輸入框：這段字要寫進哪個框
 export function fieldQuestions(candidates, win) {
   const criteria = {};
   candidates.forEach((c, i) => { criteria[`e${i}`] = describeElement(c, win); });
   return {
     target: { type: 'choice', instructions: '使用者講了 `transcript`，游標不在輸入框。這段字最該寫進哪個輸入框？', criteria },
-  };
-}
-
-// 指令模式的一步：做什麼、對哪個元件
-export function stepQuestions(elements, win) {
-  const criteria = {};
-  elements.forEach((e, i) => { criteria[`e${i}`] = describeElement(e, win); });
-  return {
-    action: {
-      type: 'choice',
-      instructions: '要達成 `goal`，看 `screen`（目前畫面上可以操作的東西，包括截圖認出來的字）和 `done_steps`（已經做過的步驟），下一步要做什麼？要找的東西不在 `screen` 上時，先用搜尋：有搜尋框就填 `text`，沒有就點「搜尋／Search」按鈕把搜尋框叫出來。`text` 是網址（例如 mail.google.com）而且在瀏覽器裡：畫面上有直接通往 `goal` 的連結就點它，沒有就在瀏覽器的網址列（網址與搜尋列）填 `text`，再按 Enter。搜尋框裡已經有 `text`、畫面上也列出結果時，下一步是點結果裡名字對得上的那一個（例如人名、對話名稱、股票），不是再點搜尋框，也不要按 Enter 期待它自己打開。',
-      criteria: {
-        click: '點畫面上的某個按鈕、連結、分頁、清單項目或截圖認出來的字（包括把搜尋框叫出來的「搜尋／Search」按鈕、搜尋結果裡的人名）',
-        fill: '在某個輸入框填入 `text`（多半是搜尋框；`text` 是網址時是瀏覽器的網址列）',
-        enter: '在剛填好字的輸入框按 Enter（送出搜尋）',
-        write: '已經打開和對的人的對話：在訊息框寫入 `message`（只有 `message` 有字時才用；不送出）',
-        done: '目標已經達成：畫面已經是使用者要的',
-        stuck: '這個畫面做不到，或不知道下一步',
-      },
-    },
-    target: {
-      type: 'choice',
-      instructions: '要點或要填的是哪一個？（action 是 click 或 fill 時才用得到）名字要對得上 `goal` 講的那個項目；要找的項目不在 `screen` 上時，選搜尋框或「搜尋／Search」按鈕；`text` 是網址時選瀏覽器的網址列。',
-      criteria,
-    },
   };
 }
