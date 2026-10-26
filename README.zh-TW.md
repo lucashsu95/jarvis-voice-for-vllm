@@ -6,7 +6,7 @@
 
 網站：[jarvis-voice.com](https://jarvis-voice.com)
 
-macOS 選單列小程式。開著就自動收音，你講的話直接寫進正在用的 app：Claude、ChatGPT、瀏覽器、LINE、備忘錄都可以。只寫不送出，要送自己按 Enter。
+macOS 選單列小程式。開著就自動收音，你講的話直接寫進正在用的 app：Claude、ChatGPT、瀏覽器、LINE、備忘錄都可以。
 
 分三層，預設都開，每一層都是在前一層上面多做一點；從選單可以關掉第二、三層：
 

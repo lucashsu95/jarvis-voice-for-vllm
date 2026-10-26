@@ -6,7 +6,7 @@ English ｜ [繁體中文](README.zh-TW.md)
 
 Website: [jarvis-voice.com](https://jarvis-voice.com)
 
-A macOS menu bar app. While it's running it listens on its own, and what you say goes straight into the app you're using: Claude, ChatGPT, your browser, LINE, Notes, anything. It only types, it never sends; press Enter yourself when you're ready.
+A macOS menu bar app. While it's running it listens on its own, and what you say goes straight into the app you're using: Claude, ChatGPT, your browser, LINE, Notes, anything.
 
 It works in three layers. All three are on by default, each one builds on the one before, and you can turn layers 2 and 3 off from the menu:
 
