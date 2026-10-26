@@ -55,7 +55,8 @@ export const clipHead = (text, max = BUBBLE_MAX_CHARS) => (text.length > max ? `
 // 指令做到哪一步（小框 command 的 detail）：runCommand 的 onStep({ n, action, target }) → 「第 1 步：點 按鈕「Gmail」（上左）」
 export function stepText({ n, action, target = '' }, lang = 'zh') {
   const verb = VERBS[action] ? pick(VERBS[action], lang) : action;
-  return `${pick(TEXT.step, lang, n)}${verb}${target ? ` ${target}` : ''}`;
+  // 中文名字用引號包起來時直接接在動詞後面（點「財務」），其他照舊空一格（點 按鈕「行事曆」、click e3）
+  return `${pick(TEXT.step, lang, n)}${verb}${target ? `${/^[「（]/.test(target) ? '' : ' '}${target}` : ''}`;
 }
 
 export function bubbleContent(e, lang = 'zh') {

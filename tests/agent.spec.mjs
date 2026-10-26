@@ -127,4 +127,5 @@ test('操作代理：parseCall 只收清單裡的工具；callTarget 把編號�
   assert.equal(core.callTarget({ tool: 'scroll', args: { ref: 'e9', direction: 'down' } }, {}), 'e9 direction=down');
   assert.equal(core.stepText({ n: 3, action: 'scroll', target: '清單 direction=down' }, 'zh'), '第 3 步：捲動 清單 direction=down');
   assert.equal(core.stepText({ n: 1, action: 'open_page', target: 'page=stock' }, 'en'), 'Step 1: open page=stock');
+  assert.equal(core.stepText({ n: 2, action: 'click', target: '「財務」' }, 'zh'), '第 2 步：點「財務」');
 });
