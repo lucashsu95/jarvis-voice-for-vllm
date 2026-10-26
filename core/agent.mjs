@@ -65,11 +65,29 @@ export function agentPrompt({ goal, said = '', context = {}, screen, tools, done
   ].filter(Boolean).join('\n');
 }
 
+// 字裡第一個完整的 JSON 物件（模型偶爾一次回兩個動作、或前後多說話）
+function firstObject(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return '';
+  let depth = 0;
+  let quoted = false;
+  for (let i = start; i < text.length; i += 1) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '\\') i += 1;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === '{') depth += 1;
+    else if (c === '}' && (depth -= 1) === 0) return text.slice(start, i + 1);
+  }
+  return '';
+}
+
 // 模型吐的字 → { tool, args, why }；工具不在清單裡、不是 JSON 回 null
 export function parseCall(raw, names) {
   let body;
   try {
-    body = JSON.parse(String(raw ?? '').match(/\{[\s\S]*\}/)?.[0] ?? '');
+    body = JSON.parse(firstObject(String(raw ?? '')));
   } catch {
     return null;
   }

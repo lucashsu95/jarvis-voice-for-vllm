@@ -100,6 +100,8 @@ test('操作代理：parseCall 只收清單裡的工具；callTarget 把編號�
   const names = new Set(['click', 'scroll']);
   assert.deepEqual(core.parseCall('好的：{"tool":"scroll","args":{"direction":"down"},"why":"往下找"}', names), { tool: 'scroll', args: { direction: 'down' }, why: '往下找' });
   assert.equal(core.parseCall('{"tool":"delete_all","args":{}}', names), null);
+  // 一次回兩個動作：只取第一個；字串裡的括號不算
+  assert.deepEqual(core.parseCall('{"tool":"click","args":{"ref":"e2"},"why":"點 {走勢}"}\n{"tool":"scroll","args":{},"why":""}', names), { tool: 'click', args: { ref: 'e2' }, why: '點 {走勢}' });
   assert.equal(core.parseCall('not json', names), null);
   assert.equal(core.callTarget({ tool: 'click', args: { ref: 'e3' } }, { e3: '按鈕「走勢」' }), '按鈕「走勢」');
   assert.equal(core.callTarget({ tool: 'scroll', args: { ref: 'e9', direction: 'down' } }, {}), 'e9 direction=down');
