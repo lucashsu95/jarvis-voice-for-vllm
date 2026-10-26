@@ -11,7 +11,8 @@
 // holdMs：顯示多久就收（null＝一直留著，聽著、整理中、指令做到一半；App 自己在很久沒新消息時收）。
 // lang：zh（台灣正體）、en、ja；認不得的用 en。
 
-export const BUBBLE_HOLD_MS = { pasted: 1400, done: 1800, ignored: 2500, nofield: 3000, failed: 3500, error: 4000 };
+// 指令完成只要看一眼就收（擋在畫面上很礙事）；沒完成、出錯要看得清楚原因，停久一點
+export const BUBBLE_HOLD_MS = { pasted: 1400, done: 700, ignored: 2500, nofield: 3000, failed: 3500, error: 4000 };
 export const BUBBLE_MAX_CHARS = 84; // 內文最多三行：一行約 30 個中文字，只留最後這麼多字，最新的字才一定看得到
 
 const TEXT = {

@@ -121,6 +121,7 @@ test('小框：每個階段的標題、內文、顏色、停多久；三種語�
   assert.equal(core.bubbleContent({ state: 'working', text: 'x' }, 'en').busy, true);
   assert.equal(core.bubbleContent({ state: 'pasted' }, 'ja').title, '貼り付けました');
   assert.equal(core.bubbleContent({ state: 'pasted' }).holdMs, 1400);
+  assert.equal(core.bubbleContent({ state: 'done', text: '打開市集' }).holdMs, 700);
   assert.equal(core.bubbleContent({ state: 'command', text: '打開行事曆', detail: '第 1 步：點 按鈕「行事曆」' }, 'zh').body, '打開行事曆\n第 1 步：點 按鈕「行事曆」');
   assert.equal(core.bubbleContent({ state: 'failed', text: 'g', detail: '找不到' }).loud, true);
   assert.equal(core.bubbleContent({ state: 'nofield', detail: '複製上一句' }, 'zh').body, '複製上一句');
