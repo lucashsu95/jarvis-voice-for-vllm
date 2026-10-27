@@ -3,7 +3,7 @@
 // 階段（state）：
 //   hearing：講話中，text 是聽到的字；speaker 是聲紋比對（mine 你說的、short 短句）。
 //            聲紋還在背景學的時候不標、也不說還要講多久（core/voiceprint.mjs：沒有建立聲紋這一步）；
-//   ignored：聲紋不像你、這句不轉寫（text 是預覽聽到的字；按著講的才說，一直聽時別人講的不跳，見 segment.mjs ownSpeechBubble）；
+//   ignored：聲紋不像你、這句不轉寫（text 是預覽聽到的字；CubeLV 一直聽不跳，見 segment.mjs speechBubble 的 confirmedOnly）；
 //   working：整理中（text 是轉寫原稿）；pasted：已貼上；
 //   command：語音指令（text 是目標，detail 是做到哪一步，見 stepText）；done：指令完成；failed：指令沒完成（detail 是原因）；
 //   nofield：自己找也找不到可以寫的地方，這段沒寫（detail 是 App 給的補充，例如 Mac 的「複製上一句」）；error：出錯（text 是原因）；hide：收起來。

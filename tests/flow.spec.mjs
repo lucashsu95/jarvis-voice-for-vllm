@@ -112,19 +112,25 @@ test('幾句合成一段：停滿 pauseMs 才交出去；提早整理好、停�
   assert.equal(late.length, 2);
 });
 
-test('一直聽的小框：確認是使用者講的才跳；還沒比完、別人講的、被聲紋略過的不跳；上一句是你的才帶預覽；停一下先整理照常出', () => {
-  // 這段還沒有句子確認是你講的：誰在講都不跳（正在顯示「聽到」的 App 收掉）
-  assert.equal(core.ownSpeechBubble({ heard: '', live: '旁邊的人在聊天', lastMine: true, speaking: true }), null);
-  assert.equal(core.ownSpeechBubble({ heard: '', live: '', lastMine: false }), null);
-  // 有一句過了聲紋：出來，接著講的那句上一句是你的才帶預覽
-  assert.deepEqual(core.ownSpeechBubble({ heard: '打開台積電', live: '打開台積電的個股資訊頁', lastMine: true, speaking: true }), { state: 'hearing', text: '打開台積電的個股資訊頁' });
-  // 最近那句被聲紋擋掉：只留確認是你的字
-  assert.deepEqual(core.ownSpeechBubble({ heard: '打開台積電', live: '打開台積電今天晚餐吃什麼', lastMine: false, speaking: true }), { state: 'hearing', text: '打開台積電' });
-  // 預覽比轉好的字短（還沒跟上）：顯示轉好的
-  assert.deepEqual(core.ownSpeechBubble({ heard: '打開台積電的個股資訊頁', live: '打開台積', lastMine: true }), { state: 'hearing', text: '打開台積電的個股資訊頁' });
-  // 停一下先整理：整理中；又開口了就回到聽到的字
-  assert.deepEqual(core.ownSpeechBubble({ heard: '打開市集', working: '打開市集', speaking: false }), { state: 'working', text: '打開市集' });
-  assert.deepEqual(core.ownSpeechBubble({ heard: '打開市集', working: '打開市集', speaking: true, lastMine: true, live: '打開市集' }), { state: 'hearing', text: '打開市集' });
+test('講話中的小框（Mac、CubeLV 同一個 speechBubble）：預設一開口就跟著出字；confirmedOnly（CubeLV 一直聽）確認是你講的才跳', () => {
+  const b = core.speechBubble;
+  // 預設：一開口就出，預覽跟著跑；講話中不標是誰，講完才標；停一下先整理照常出
+  assert.deepEqual(b({ heard: '', live: '', speaking: true }), { state: 'hearing', text: '', speaker: '' });
+  assert.deepEqual(b({ heard: '', live: '打開台積', speaking: true, speaker: 'mine' }), { state: 'hearing', text: '打開台積', speaker: '' });
+  assert.deepEqual(b({ heard: '打開台積電', live: '打開台積電的個股', speaking: false, speaker: 'mine' }), { state: 'hearing', text: '打開台積電的個股', speaker: 'mine' });
+  assert.deepEqual(b({ heard: '打開台積電的個股資訊頁', live: '打開台積', speaking: false }), { state: 'hearing', text: '打開台積電的個股資訊頁', speaker: '' });
+  assert.equal(b({ heard: '', live: '', speaking: false }), null);
+  assert.deepEqual(b({ heard: '打開市集', working: '打開市集', speaking: false }), { state: 'working', text: '打開市集', speaker: '' });
+  // 預設：別人講的說「別人在講話」，附上預覽聽到的字
+  assert.deepEqual(b({ ignored: '今天晚餐吃什麼', speaking: false }), { state: 'ignored', text: '今天晚餐吃什麼', speaker: '' });
+  // confirmedOnly：這段還沒有句子確認是你講的，誰在講都不跳；別人講的也不跳
+  const only = (input) => b({ ...input, confirmedOnly: true });
+  assert.equal(only({ heard: '', live: '旁邊的人在聊天', lastMine: true, speaking: true }), null);
+  assert.equal(only({ heard: '', ignored: '今天晚餐吃什麼', lastMine: false }), null);
+  // confirmedOnly：有一句轉好了才出來，上一句是你的才帶預覽，講話中就標是誰
+  assert.deepEqual(only({ heard: '打開台積電', live: '打開台積電的個股資訊頁', lastMine: true, speaking: true, speaker: 'mine' }), { state: 'hearing', text: '打開台積電的個股資訊頁', speaker: 'mine' });
+  assert.deepEqual(only({ heard: '打開台積電', live: '打開台積電今天晚餐吃什麼', lastMine: false, speaking: true }), { state: 'hearing', text: '打開台積電', speaker: '' });
+  assert.deepEqual(only({ heard: '打開市集', working: '打開市集', speaking: false }), { state: 'working', text: '打開市集', speaker: '' });
 });
 
 test('小框：每個階段的標題、內文、顏色、停多久；三種語言；聲紋還在背景學不標也不說還要講多久；太長只留最後的字', () => {

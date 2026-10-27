@@ -35,7 +35,7 @@ function conversation(dir, lines) {
   return wav;
 }
 
-test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那句不送轉寫、不貼、小框也不跳，之後我講的照常', { skip, timeout: 120_000 }, async () => {
+test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那句不送轉寫、不貼、小框說別人在講話，之後我講的照常', { skip, timeout: 120_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'voice-dictation-vp-'));
   mkdirSync(join(dir, 'models', 'speaker'), { recursive: true });
   symlinkSync(MODEL, join(dir, 'models', 'speaker', 'campplus_zh.onnx'));
@@ -79,10 +79,9 @@ test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那�
     assert.equal(pasted.length, 5, log);
     assert.equal((log.match(/聲紋不像你/g) ?? []).length, 1, log);
     assert.ok(existsSync(join(dir, 'voiceprint.json')), '聲紋存在本機');
-    // 確認是你的才跳：旁邊的人那句不跳「別人在講話」，講話中也不跳「聽著…」；有跳的「聽到／你說的」都是確認過的字
-    //（這裡 AI 整理關著，字回來就直接貼，通常不會有「聽到」）
-    assert.equal(bubbles.filter((b) => b.state === 'ignored').length, 0, JSON.stringify(bubbles));
-    for (const b of bubbles.filter((e) => e.state === 'hearing')) assert.match(b.body, /第\d+句/, JSON.stringify(b));
+    // Mac 不開 confirmedOnly（核心 speechBubble）：一開口就跳「聽著…」，旁邊的人那句說「別人在講話」
+    assert.equal(bubbles.filter((b) => b.state === 'ignored').length, 1, JSON.stringify(bubbles));
+    assert.ok(bubbles.some((b) => b.state === 'hearing'), JSON.stringify(bubbles));
   } finally {
     server.close();
   }

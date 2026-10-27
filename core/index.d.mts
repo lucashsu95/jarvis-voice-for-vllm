@@ -341,14 +341,17 @@ export function createSegmenter<H = unknown, P = unknown>(input: {
   setTimer?: (fn: () => void, ms: number) => unknown; clearTimer?: (timer: unknown) => void;
 }): Segmenter<H, P>;
 export function heardText(parts?: string[], previews?: string[]): string;
-/** 一直聽時小框寫什麼：確認是使用者講的才跳；null＝不顯示 */
-export function ownSpeechBubble(input: {
+/** 講話中小框寫什麼（Mac 小程式、CubeLV 同一個）；confirmedOnly：確認是使用者講的才跳（CubeLV 一直聽）；null＝不顯示 */
+export function speechBubble(input: {
   heard?: string;
   live?: string;
-  lastMine?: boolean;
   working?: string;
   speaking?: boolean;
-}): { state: 'working' | 'hearing'; text: string } | null;
+  speaker?: string;
+  ignored?: string;
+  lastMine?: boolean;
+  confirmedOnly?: boolean;
+}): { state: 'working' | 'hearing' | 'ignored'; text: string; speaker: string } | null;
 
 // ---- 小框的階段（bubble.mjs）----
 export type BubbleState = 'hearing' | 'ignored' | 'working' | 'pasted' | 'command' | 'done' | 'failed' | 'nofield' | 'error' | 'hide';

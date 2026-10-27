@@ -48,7 +48,7 @@ import { createVocabAuto } from './vocab-auto.mjs';
 import { finishText, isSpeech, withSpacing } from './text.mjs';
 // 一段話講完之後怎麼處理、幾句合成一段、小框的階段：都在核心（CubeLV、平行沙盒同一份），這裡只接 Mac 的接頭
 import { judgeInField, judgeUtterance, pickTarget, planOutput } from '../core/flow.mjs';
-import { createSegmenter, heardText, ownSpeechBubble } from '../core/segment.mjs';
+import { createSegmenter, heardText, speechBubble } from '../core/segment.mjs';
 import { bubbleContent, stepText } from '../core/bubble.mjs';
 import { runAgent } from '../core/agent.mjs';
 
@@ -429,14 +429,12 @@ function takeBatch(chunk) {
     } else {
       stageAudio();
       engine.skip?.();
-      // 別人講的不跳小框（確認是你的才跳，核心 ownSpeechBubble）；擋了什麼記在 log
+      // 小框寫「別人在講話，這句不轉寫」，附上本機預覽聽到的字（看得到擋了什麼）
       const heard = previews.get(currentTurn) ?? '';
       if (audioFile) log(`擋掉的這句：音檔 ${audioFile}，本機預覽聽到「${heard}」`);
       finishedPreview(currentTurn);
+      showHeard(heard);
     }
-    lastMine = verdict.pass;
-    judgedTurn = currentTurn;
-    showHeard();
     turnAudio = [];
     turnAudioBytes = 0;
   }
@@ -462,9 +460,6 @@ function startVoiceprint() {
 
 // 小框的小標籤寫是誰講的：最後一句比過聲紋的結果（mine 你說的、short 短句；聲紋還在背景學的時候不標）
 let lastSpeaker = '';
-// 最近比過聲紋的那句是你的（沒開聲紋一律算是）、比到第幾句：還在講、還沒比的那句不算確認是你講的（showHeard）
-let lastMine = true;
-let judgedTurn = 0;
 
 // 這句是不是使用者講的：還在錄樣本、太短、像使用者都放行；不像就不轉寫。v：停 0.4 秒時算好的聲紋
 function judgeTurn(sec, v = null) {
@@ -524,26 +519,21 @@ function finishedPreview(turnNo) {
   for (const k of previews.keys()) if (k <= upTo) previews.delete(k);
 }
 
-// 小框顯示目前聽到的：確認是你講的才跳（核心 ownSpeechBubble，CubeLV 的一直聽同一套）——這段有句子過了聲紋
-// （沒開聲紋就是講完的句子）才出來：已經轉好的字＋比過聲紋、還在轉的那幾句預覽（核心 heardText）；
-// 還在講、還沒比的那句，上一句是你的才帶預覽。別人講的、被聲紋略過的都不跳
-function showHeard() {
+// 小框顯示目前聽到的：寫什麼由核心 speechBubble 決定（CubeLV 同一個）。Mac 不開 confirmedOnly：一開口就跟著出字，
+// 講完比過聲紋才標「你說的」，別人講的說「別人在講話」。ignored：剛切完的這句聲紋不像你時，本機預覽聽到的字
+function showHeard(ignored) {
   if (state !== 'listening') return;
   const parts = segmenter.parts();
-  const judged = [...previews].filter(([turn]) => turn <= judgedTurn).map(([, text]) => text);
-  const shown = ownSpeechBubble({
-    heard: heardText(parts, judged),
+  const shown = speechBubble({
+    heard: heardText(parts),
     live: heardText(parts, [...previews.values()]),
-    lastMine,
     working: segmenter.working() || '',
     speaking: detector.speaking,
-  });
-  if (shown?.state === 'working') bubble('working', { text: shown.text });
-  else if (shown) {
     // 聲紋還在背景學的時候不標是誰講的（core/voiceprint.mjs：沒有建立聲紋這一步）
-    const speaker = !voiceprint || !voiceprint.enrolled() ? '' : lastSpeaker;
-    bubble('hearing', { text: shown.text.length > 120 ? `…${shown.text.slice(-120)}` : shown.text, speaker });
-  }
+    speaker: voiceprint?.enrolled() ? lastSpeaker : '',
+    ignored,
+  });
+  if (shown) bubble(shown.state, { text: shown.text, speaker: shown.speaker });
   else if (!outputQueue.length && !outputBusy) bubble('hide');
 }
 

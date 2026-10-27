@@ -115,13 +115,22 @@ export function heardText(parts = [], previews = []) {
   return [...parts, ...previews].map(withSpacing).join('').trim();
 }
 
-// 一直聽時小框寫什麼：確認是使用者講的才跳（2026-10-27 使用者：一直跳「聽到」很煩，確認是我的才跳）。
-//   heard：這一段確認是使用者講的字（過了聲紋的句子；沒開聲紋就是講完的句子）；
-//   live：再加上還在講、還不知道是誰的那句預覽；lastMine：最近比過的那句是使用者的，接著講的預覽才跟著出；
-//   working：停一下先整理的原稿；speaking：正在講。
-//   回傳 { state: 'working' | 'hearing', text }，null 就不顯示（正在顯示「聽到」就收）。別人講的、被聲紋略過的句子都不跳。
-export function ownSpeechBubble({ heard = '', live = '', lastMine = false, working = '', speaking = false } = {}) {
-  if (working && !speaking) return { state: 'working', text: working };
-  if (!heard) return null;
-  return { state: 'hearing', text: lastMine && live.length > heard.length ? live : heard };
+// 講話中小框寫什麼：Mac 小程式、CubeLV 都叫這一個，不要各自寫；要不一樣就加參數。
+//   heard：這一段轉好的字（過了聲紋才轉，就是確認是使用者講的）；live：再加上還在講、還在轉的那幾句預覽；
+//   working：停一下先整理的原稿；speaking：正在講；speaker：聲紋標籤（mine、short；聲紋還在背景學就給空的）；
+//   ignored：剛切完的這句聲紋不像使用者時給本機預覽聽到的字（沒擋就不給）；lastMine：最近比過聲紋的那句是使用者的。
+//   confirmedOnly 不開（Mac 小程式、CubeLV 按著講）：一開口就跟著出字，講完才標是誰講的；別人講的說「別人在講話」。
+//   confirmedOnly 開（CubeLV 一直聽，2026-10-27 使用者：一直跳「聽到」很煩，確認是我的才跳）：這段有句子轉好才出來，
+//     接著講的那句，上一句是你的才帶預覽；別人講的不跳。
+//   回傳 { state: 'working' | 'hearing' | 'ignored', text, speaker }，null 就不顯示「聽到」（正在顯示就收）。
+export function speechBubble({ heard = '', live = '', working = '', speaking = false, speaker = '', ignored, lastMine = false, confirmedOnly = false } = {}) {
+  if (ignored !== undefined && !confirmedOnly) return { state: 'ignored', text: ignored, speaker: '' };
+  if (working && !speaking) return { state: 'working', text: working, speaker: '' };
+  if (confirmedOnly) {
+    if (!heard) return null;
+    return { state: 'hearing', text: lastMine && live.length > heard.length ? live : heard, speaker };
+  }
+  const text = live.length >= heard.length ? live : heard;
+  if (!speaking && !text) return null;
+  return { state: 'hearing', text, speaker: speaking ? '' : speaker };
 }
