@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 const stateDir = mkdtempSync(join(tmpdir(), 'voice-dictation-ai-test-'));
@@ -393,6 +393,17 @@ test('詞彙表自動更新：加在最後的自動區、你自己寫的不動�
   assert.deepEqual(splitVocabulary(read()), { manualText: '# 產品\nCubeLV\n平行沙盒  # 中文名', manual: ['CubeLV', '平行沙盒'], auto: ['JarvisVoice'] });
   assert.equal(plausibleTerm('Route 53'), true);
   assert.equal(plausibleTerm('2330'), false);
+});
+
+test('詞彙表自動更新：雜湊、ID 不收；舊版收進來的載入時拿掉', () => {
+  for (const id of ['5fd0ff27', 'b21cbc6', 'main 8827e2c', 'commit 6a9545fe', 'g-5de434e5', '书友160304113206784']) assert.equal(plausibleTerm(id), false, id);
+  for (const word of ['a16z', 'SR008', 'arm64', 'v3.6556.2', 'renderer-dev-web-5177', 'cubelv_ai_prompt_server', 'facade']) assert.equal(plausibleTerm(word), true, word);
+  const { file, vocab, logs, read } = vocabFixture(`CubeLV\n\n${AUTO_HEADER}\nJarvisVoice\n6cad1cae\n`);
+  writeFileSync(join(dirname(file), 'vocabulary-auto.json'), JSON.stringify({ terms: {}, candidates: { ff9e825: { seen: 2, first: 0, last: 0 }, DeepSeek: { seen: 1, first: 0, last: 0 } } }));
+  vocab.noteHits('隨便講一句');
+  assert.equal(read(), `CubeLV\n\n${AUTO_HEADER}\nJarvisVoice\n`);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dirname(file), 'vocabulary-auto.json'), 'utf8')).candidates), ['DeepSeek']);
+  assert.ok(logs.some((m) => m.includes('6cad1cae')));
 });
 
 test('詞彙表自動更新：畫面上的詞要 3 次不同時候（相隔 10 分鐘）都看到才加；講到了就直接加', () => {

@@ -41,11 +41,15 @@ export function splitVocabulary(text) {
   return { manualText: manualLines.join('\n').replace(/\n+$/, ''), manual: words(manualLines), auto: words(autoLines) };
 }
 
-// 看起來像能講出口的專有名詞才收：不要網址、email、路徑、純數字、太長太短
+// 雜湊、ID 講不出口：commit hash（6cad1cae、main 8827e2c）、UUID 的一段、一長串數字（书友160304113206784）
+const looksLikeId = (t) => /\d{7,}/.test(t) || t.split(/[\s_.:#-]+/).some((p) => /^[\da-f]{7,}$/i.test(p) && /\d/.test(p));
+
+// 看起來像能講出口的專有名詞才收：不要網址、email、路徑、純數字、雜湊或 ID、太長太短
 export function plausibleTerm(term) {
   const t = String(term ?? '').trim();
   if (t.length < 2 || t.length > 40) return false;
   if (/[<>\n@]|https?:|www\.|\/|\\|^\d+$|^[\d\s.,:%-]+$/.test(t)) return false;
+  if (looksLikeId(t)) return false;
   return /[\p{L}]/u.test(t);
 }
 
@@ -84,6 +88,16 @@ export function createVocabAuto({ log = () => {}, settings, store }) {
     // 舊版直接寫進詞彙檔的自動詞，搬進來當「改字學到的」
     for (const word of readVocab().auto) {
       if (!Object.keys(state.terms).some((k) => norm(k) === norm(word))) state.terms[word] = { source: 'edit', addedAt: Date.now(), hits: 0 };
+    }
+    // 照現在的規則再篩一次：舊版收進來的雜湊、ID 拿掉
+    const dropped = Object.keys(state.terms).filter((w) => !plausibleTerm(w));
+    const droppedCandidates = Object.keys(state.candidates).filter((w) => !plausibleTerm(w));
+    for (const w of dropped) delete state.terms[w];
+    for (const w of droppedCandidates) delete state.candidates[w];
+    if (dropped.length || droppedCandidates.length) save();
+    if (dropped.length) {
+      writeVocab();
+      log(`詞彙表拿掉不像詞的「${dropped.join('」「')}」`);
     }
     return state;
   }
