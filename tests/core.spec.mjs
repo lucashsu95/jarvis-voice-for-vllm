@@ -124,29 +124,6 @@ test('核心的詞彙自動更新：存放接頭傳記憶體版也能用', () =>
   assert.ok(state.terms.JarvisVoice);
 });
 
-test('同步腳本：複製核心並在每個檔案寫上來源 commit；核心已經拿掉的同步檔一起刪，別人的檔案不動', async () => {
-  const { execFileSync } = await import('node:child_process');
-  const { mkdtempSync, readFileSync: read, readdirSync: list, writeFileSync: write } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const dest = mkdtempSync(join(tmpdir(), 'jarvis-core-'));
-  write(join(dest, 'commander.mjs'), '// 從 jarvis-voice core@abc1234 同步（舊的）\nexport {};\n');
-  write(join(dest, 'mine.mjs'), 'export const mine = 1;\n');
-  try {
-    execFileSync(join(import.meta.dirname, '..', 'scripts', 'sync-core.sh'), [dest], { stdio: 'pipe' });
-  } catch (err) {
-    // core/ 還有沒 commit 的改動時腳本會拒絕：開發中略過
-    if (String(err.stderr).includes('還沒 commit')) return;
-    throw err;
-  }
-  const sha = read(join(dest, 'CORE_COMMIT'), 'utf8').trim();
-  assert.ok(list(dest).includes('index.mjs'));
-  assert.ok(!list(dest).includes('commander.mjs'), '核心已經沒有的同步檔要刪');
-  assert.ok(list(dest).includes('mine.mjs'), '不是同步過去的檔案不動');
-  assert.match(read(join(dest, 'editor.mjs'), 'utf8'), new RegExp(`^// 從 jarvis-voice core@${sha} 同步`));
-  const synced = await import(join(dest, 'index.mjs'));
-  assert.equal(typeof synced.editSegment, 'function');
-});
-
 test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的放行、不像的擋；短句另外用短句的門檻；很確定的句子加進最近的聲音', () => {
   // 假的聲紋：使用者在 x 軸附近，別人在 y 軸附近（8 維，加一點雜訊）
   let seed = 7;

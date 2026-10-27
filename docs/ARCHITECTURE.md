@@ -194,7 +194,7 @@ CubeLV（`renderer/src/lib/voice/domAgent.ts`）與 Mac 小程式（`bin/agent-s
 
 Mac 的按鍵、點滑鼠、滾輪只在那個 app 在最前面時送（不然會落到別的 app）；不在最前面時 Enter 改用元件自己的「確認」。捲動先用捲動區自己的「捲一頁」（原生的有），沒有（網頁）就把滑鼠移過去送滾輪、再移回原位。
 
-其他專案用 `scripts/sync-core.sh <目標資料夾>` 同步一份過去：每個檔案開頭寫來源 commit，不在那邊改；要改回 `core/` 改再同步。TypeScript 用 `core/index.d.mts` 的型別。
+核心只有這一份：其他專案用 git submodule 直接掛這個 repo，從 `core/index.mjs` 引用（CubeLV 掛在 `cubelv_electron/jarvis-voice`，平行沙盒插件透過 CubeLV 的 `@cubelv/sdk` 用同一份），不准複製過去。要改核心就在這裡改、push，再到那個專案把 submodule 更新到新的 commit。TypeScript 用 `core/index.d.mts` 的型別。
 
 ## 程式
 

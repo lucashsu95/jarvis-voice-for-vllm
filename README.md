@@ -211,7 +211,7 @@ If you'd rather not get and look after your own keys, you can use a CubeLV accou
 - `bin/own-keys.mjs`, `bin/set-key.mjs`: "Set up your own key…" in the menu (test before saving, keys kept in the Keychain, switching transcription and AI cleanup).
 - `bin/cubelv.mjs`, `bin/cubelv-login.mjs`: Sign in with CubeLV (browser authorization, tokens kept in the Keychain and refreshed automatically, CubeLV transcription and AI cleanup).
 - `bin/ax-agent.js`: the long-running Accessibility helper (JXA). Reads context and on-screen text, finds and focuses text fields, pastes (save clipboard → Cmd+V → restore, only to the frontmost app), selects what it just pasted to replace it, and lists and operates on-screen controls.
-- `core/`: the shared core, one copy used by this app, CubeLV and ParallelSandbox (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)); `scripts/sync-core.sh` copies it into other projects.
+- `core/`: the shared core, one copy used by this app, CubeLV and ParallelSandbox (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)); other projects mount this repo as a git submodule and import `core/index.mjs` directly (never copy it).
 - `bin/editor.mjs`: AI cleanup. `bin/ai-check.mjs`: checks that AI cleanup and the decision maker are set up. `bin/decide.mjs`: layer 3 decisions (Jev). `bin/agent-screen.mjs`: voice commands (reads the frontmost app's screen for the shared agent and carries out its steps). `bin/targeter.mjs`: rules for picking a text field. `bin/learn.mjs`: learning from your corrections. `bin/vocab-auto.mjs`: automatic vocabulary updates and the cap.
 - `bin/vocab-test.mjs`: vocabulary test (see [AI_SETUP.md](AI_SETUP.md)).
 - `site/`: the jarvis-voice.com website, published to GitHub Pages by GitHub Actions on every push to main.

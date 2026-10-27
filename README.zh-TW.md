@@ -211,7 +211,7 @@ AI 會：
 - `bin/own-keys.mjs`、`bin/set-key.mjs`：選單「設定自己的 key…」（先測再存、key 存鑰匙圈、切換轉寫與 AI 整理）。
 - `bin/cubelv.mjs`、`bin/cubelv-login.mjs`：用 CubeLV 登入（瀏覽器授權、token 存鑰匙圈並自動更新、CubeLV 的轉寫與 AI 整理）。
 - `bin/ax-agent.js`：常駐的「輔助使用」小幫手（JXA）。讀上下文、找輸入框、對焦、貼上（暫存剪貼簿 → Cmd+V → 還原，只送給最前面的 app）、選回剛貼的字、列出畫面上的按鈕並操作。
-- `core/`：共用核心，Mac 小程式、CubeLV、平行沙盒共用一份（見 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)）。`scripts/sync-core.sh` 同步到別的專案。
+- `core/`：共用核心，Mac 小程式、CubeLV、平行沙盒共用一份（見 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)）。其他專案用 git submodule 直接掛這個 repo、從 `core/index.mjs` 引用，不複製。
 - `bin/editor.mjs`：AI 整理。`bin/ai-check.mjs`：檢查 AI 整理和決策器設定好了沒。`bin/decide.mjs`：第三層的決策（Jev）。`bin/agent-screen.mjs`：語音指令（讀最前面那個 app 的畫面給核心的操作代理、照工具動手）。`bin/targeter.mjs`：挑輸入框的規則。`bin/learn.mjs`：從你的改字學詞。`bin/vocab-auto.mjs`：詞彙表自動更新與上限。
 - `bin/vocab-test.mjs`：專有名詞測試（見 [AI_SETUP.md](AI_SETUP.md)）。
 - `site/`：網站 jarvis-voice.com，push 到 main 後由 GitHub Actions 發到 GitHub Pages。

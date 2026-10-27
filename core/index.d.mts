@@ -347,11 +347,11 @@ export function speechBubble(input: {
   live?: string;
   working?: string;
   speaking?: boolean;
-  speaker?: string;
+  speaker?: '' | 'mine' | 'short';
   ignored?: string;
   lastMine?: boolean;
   confirmedOnly?: boolean;
-}): { state: 'working' | 'hearing' | 'ignored'; text: string; speaker: string } | null;
+}): { state: 'working' | 'hearing' | 'ignored'; text: string; speaker: '' | 'mine' | 'short' } | null;
 
 // ---- 小框的階段（bubble.mjs）----
 export type BubbleState = 'hearing' | 'ignored' | 'working' | 'pasted' | 'command' | 'done' | 'failed' | 'nofield' | 'error' | 'hide';
