@@ -112,6 +112,21 @@ test('幾句合成一段：停滿 pauseMs 才交出去；提早整理好、停�
   assert.equal(late.length, 2);
 });
 
+test('一直聽的小框：確認是使用者講的才跳；還沒比完、別人講的、被聲紋略過的不跳；上一句是你的才帶預覽；停一下先整理照常出', () => {
+  // 這段還沒有句子確認是你講的：誰在講都不跳（正在顯示「聽到」的 App 收掉）
+  assert.equal(core.ownSpeechBubble({ heard: '', live: '旁邊的人在聊天', lastMine: true, speaking: true }), null);
+  assert.equal(core.ownSpeechBubble({ heard: '', live: '', lastMine: false }), null);
+  // 有一句過了聲紋：出來，接著講的那句上一句是你的才帶預覽
+  assert.deepEqual(core.ownSpeechBubble({ heard: '打開台積電', live: '打開台積電的個股資訊頁', lastMine: true, speaking: true }), { state: 'hearing', text: '打開台積電的個股資訊頁' });
+  // 最近那句被聲紋擋掉：只留確認是你的字
+  assert.deepEqual(core.ownSpeechBubble({ heard: '打開台積電', live: '打開台積電今天晚餐吃什麼', lastMine: false, speaking: true }), { state: 'hearing', text: '打開台積電' });
+  // 預覽比轉好的字短（還沒跟上）：顯示轉好的
+  assert.deepEqual(core.ownSpeechBubble({ heard: '打開台積電的個股資訊頁', live: '打開台積', lastMine: true }), { state: 'hearing', text: '打開台積電的個股資訊頁' });
+  // 停一下先整理：整理中；又開口了就回到聽到的字
+  assert.deepEqual(core.ownSpeechBubble({ heard: '打開市集', working: '打開市集', speaking: false }), { state: 'working', text: '打開市集' });
+  assert.deepEqual(core.ownSpeechBubble({ heard: '打開市集', working: '打開市集', speaking: true, lastMine: true, live: '打開市集' }), { state: 'hearing', text: '打開市集' });
+});
+
 test('小框：每個階段的標題、內文、顏色、停多久；三種語言；聲紋還在背景學不標也不說還要講多久；太長只留最後的字', () => {
   assert.deepEqual(core.bubbleContent({ state: 'hearing' }, 'zh'), { title: '聽著…', body: '', tone: 'blue', loud: false, busy: false, result: false, holdMs: null });
   assert.equal(core.bubbleContent({ state: 'hearing', text: '打開' }, 'zh').title, '聽到');

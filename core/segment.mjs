@@ -114,3 +114,14 @@ export function createSegmenter({
 export function heardText(parts = [], previews = []) {
   return [...parts, ...previews].map(withSpacing).join('').trim();
 }
+
+// 一直聽時小框寫什麼：確認是使用者講的才跳（2026-10-27 使用者：一直跳「聽到」很煩，確認是我的才跳）。
+//   heard：這一段確認是使用者講的字（過了聲紋的句子；沒開聲紋就是講完的句子）；
+//   live：再加上還在講、還不知道是誰的那句預覽；lastMine：最近比過的那句是使用者的，接著講的預覽才跟著出；
+//   working：停一下先整理的原稿；speaking：正在講。
+//   回傳 { state: 'working' | 'hearing', text }，null 就不顯示（正在顯示「聽到」就收）。別人講的、被聲紋略過的句子都不跳。
+export function ownSpeechBubble({ heard = '', live = '', lastMine = false, working = '', speaking = false } = {}) {
+  if (working && !speaking) return { state: 'working', text: working };
+  if (!heard) return null;
+  return { state: 'hearing', text: lastMine && live.length > heard.length ? live : heard };
+}

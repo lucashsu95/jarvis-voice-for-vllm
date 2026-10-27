@@ -35,7 +35,7 @@ function conversation(dir, lines) {
   return wav;
 }
 
-test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那句不送轉寫、不貼，之後我講的照常', { skip, timeout: 120_000 }, async () => {
+test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那句不送轉寫、不貼、小框也不跳，之後我講的照常', { skip, timeout: 120_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'voice-dictation-vp-'));
   mkdirSync(join(dir, 'models', 'speaker'), { recursive: true });
   symlinkSync(MODEL, join(dir, 'models', 'speaker', 'campplus_zh.onnx'));
@@ -62,14 +62,16 @@ test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那�
       engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: false }, speed: { hedge: 1 }, voiceprint: { enabled: true },
     }));
     const child = spawn(process.execPath, [join(import.meta.dirname, '..', 'bin', 'listen.mjs'), '--file', wav, '--dry-paste'], {
-      env: { ...process.env, VOICE_DICTATION_STATE_DIR: dir, VOICE_DICTATION_OPENAI_HTTP_URL: `http://127.0.0.1:${server.address().port}/v1/audio/transcriptions` },
+      env: { ...process.env, VOICE_DICTATION_HUD: '1', VOICE_DICTATION_STATE_DIR: dir, VOICE_DICTATION_OPENAI_HTTP_URL: `http://127.0.0.1:${server.address().port}/v1/audio/transcriptions` },
     });
     let out = '';
     let log = '';
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { log += d; });
     await new Promise((r) => child.on('close', r));
-    const pasted = out.split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === 'pasted');
+    const events = out.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const pasted = events.filter((e) => e.type === 'pasted');
+    const bubbles = events.filter((e) => e.type === 'bubble');
     assert.match(log, /聲紋樣本錄好了/, log);
     assert.match(log, /聲紋不像你/, log);
     // 6 句裡旁邊的人那句不送轉寫、不貼（轉寫請求數不算：講到一半停頓時提早送、又開口作廢的也會算進去）
@@ -77,6 +79,10 @@ test('只聽我的聲音：先從我講的話錄樣本，旁邊的人講的那�
     assert.equal(pasted.length, 5, log);
     assert.equal((log.match(/聲紋不像你/g) ?? []).length, 1, log);
     assert.ok(existsSync(join(dir, 'voiceprint.json')), '聲紋存在本機');
+    // 確認是你的才跳：旁邊的人那句不跳「別人在講話」，講話中也不跳「聽著…」；有跳的「聽到／你說的」都是確認過的字
+    //（這裡 AI 整理關著，字回來就直接貼，通常不會有「聽到」）
+    assert.equal(bubbles.filter((b) => b.state === 'ignored').length, 0, JSON.stringify(bubbles));
+    for (const b of bubbles.filter((e) => e.state === 'hearing')) assert.match(b.body, /第\d+句/, JSON.stringify(b));
   } finally {
     server.close();
   }
