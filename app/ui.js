@@ -30,7 +30,6 @@ function resolveNode() {
   for (const c of candidates) if (c && fm().fileExistsAtPath(c)) return c;
   return null;
 }
-const NODE_DIR = (resolveNode() || BUILD.node).replace(/\/[^/]*$/, '');
 // 系統語言是中文就顯示中文，其他都用英文（VOICE_DICTATION_LANG 可以指定，測試用）
 const LANG = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('VOICE_DICTATION_LANG'))
   || ObjC.unwrap($.NSLocale.preferredLanguages.firstObject) || '';
@@ -432,7 +431,8 @@ function showAlert(title, text) {
 // 帶起 bin/ 裡的程式用的環境：找得到 node、ffmpeg，狀態資料夾跟小程式同一個，提示跟選單同一種語言（從 Finder 開的 app 沒有 LANG）
 function childEnv() {
   const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
-  env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
+  const nodeDir = (resolveNode() || BUILD.node).replace(/\/[^/]*$/, '');
+  env.setObjectForKey($(`${nodeDir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
   env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
   env.setObjectForKey($(ZH ? 'zh' : 'en'), $('VOICE_DICTATION_LANG'));
   return env;
