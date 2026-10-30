@@ -7,7 +7,24 @@
 // 「換回原文」把上一段 AI 整理過的字換回轉寫原稿。
 // BUILD（{ node, repo, state }）由外殼放在全域。
 const LISTEN = `${BUILD.repo}/bin/listen.mjs`;
-const NODE_DIR = BUILD.node.replace(/\/[^/]*$/, '');
+// BUILD.node 是打包那一刻的 node 路徑；mise／brew 之後更新 node，路徑就失效、常駐程式開不起來。
+// 重包 app 會換簽名、麥克風與輔助使用權限要重給，所以這裡在 runtime 依序找實際存在的 node。
+function resolveNode() {
+  const home = ObjC.unwrap($.NSHomeDirectory());
+  const candidates = [BUILD.node, `${home}/.local/share/mise/shims/node`];
+  const installs = `${home}/.local/share/mise/installs/node`;
+  const list = ObjC.unwrap(fm().directoryContentsAtPath(installs)) || [];
+  const vers = list.filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+    .sort((a, b) => {
+      const p = a.split('.').map(Number), q = b.split('.').map(Number);
+      for (let i = 0; i < 3; i++) if (p[i] !== q[i]) return p[i] - q[i];
+      return 0;
+    });
+  if (vers.length) candidates.push(`${installs}/${vers[vers.length - 1]}/bin/node`);
+  candidates.push('/opt/homebrew/bin/node', '/usr/local/bin/node');
+  for (const c of candidates) if (c && fm().fileExistsAtPath(c)) return c;
+  return null;
+}
 // 系統語言是中文就顯示中文，其他都用英文（VOICE_DICTATION_LANG 可以指定，測試用）
 const LANG = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('VOICE_DICTATION_LANG'))
   || ObjC.unwrap($.NSLocale.preferredLanguages.firstObject) || '';
@@ -409,12 +426,19 @@ function onEnded() {
 
 function startListener() {
   if (quitting || task) return;
+  const node = resolveNode();
+  if (!node) {
+    view = { ...view, state: 'error', message: t(`找不到 node（原本的 ${BUILD.node} 已不存在，mise／brew 也找不到）；裝好 node 後從選單「結束」再打開`, `No node found (baked path ${BUILD.node} is gone, none in mise/brew); install node, then quit and reopen`) };
+    refresh();
+    scheduleRestart(30);
+    return;
+  }
   try {
     const t = $.NSTask.alloc.init;
-    t.setLaunchPath(BUILD.node);
+    t.setLaunchPath(node);
     t.setArguments($([LISTEN, '--app']));
     const env = $.NSMutableDictionary.dictionaryWithDictionary($.NSProcessInfo.processInfo.environment);
-    env.setObjectForKey($(`${NODE_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
+    env.setObjectForKey($(`${node.replace(/\/[^/]*$/, '')}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), $('PATH'));
     env.setObjectForKey($(BUILD.state), $('VOICE_DICTATION_STATE_DIR'));
     t.setEnvironment(env);
     const pipe = $.NSPipe.pipe;
