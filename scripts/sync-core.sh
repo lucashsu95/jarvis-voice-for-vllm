@@ -20,4 +20,4 @@ for f in "$DIR"/core/*.mjs "$DIR"/core/index.d.mts; do
   } > "$DEST/$name"
 done
 echo "$SHA" > "$DEST/CORE_COMMIT"
-echo "已同步 core@$SHA → $DEST（$(ls "$DIR"/core | wc -l | tr -d ' ') 個檔案）"
+echo "已同步 core@$SHA → ${DEST}（$(ls "$DIR"/core | wc -l | tr -d ' ') 個檔案）"
