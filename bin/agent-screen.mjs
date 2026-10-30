@@ -66,8 +66,22 @@ const within = (item, box) => {
   return box.w > 0 && box.h > 0 && c.x >= box.x && c.x <= box.x + box.w && c.y >= box.y && c.y <= box.y + box.h;
 };
 
-/** AX 小幫手 tree 的結果 → 核心的節點（截圖認出來的字補進沒有名字的東西，剩下的列成「畫面上的字」） */
-export function treeNodes(res) {
+const contains = (box, p) => box.w > 0 && box.h > 0 && p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h;
+
+/** 滑鼠指著的東西：tree 裡包含 point、在畫面上、面積最小的那個能操作的東西；點不在視窗裡（指著別的 app）就沒有 */
+export function pointedNode(res, point) {
+  if (!point || !res.window || !contains(res.window, point)) return null;
+  let best = null;
+  for (const n of res.nodes ?? []) {
+    if (n.kind !== 'control' || n.off || !contains(n, point)) continue;
+    if (!best || n.w * n.h < best.w * best.h) best = n;
+  }
+  return best;
+}
+
+/** AX 小幫手 tree 的結果 → 核心的節點（截圖認出來的字補進沒有名字的東西，剩下的列成「畫面上的字」）；
+ *  pointed：pointedNode 找到的那個，標「滑鼠指著」 */
+export function treeNodes(res, pointed = null) {
   const shot = readingOrder(res.ocr?.items ?? []);
   const used = new Set();
   const nodes = [];
@@ -88,7 +102,7 @@ export function treeNodes(res) {
       const seen = inside.map((item) => item.text).join(' ').trim();
       const name = n.name || (FIELDS.includes(n.role) || seen.length < 2 ? '' : seen);
       nodes.push({
-        depth, kind: 'control', role: roleName(n), name, value: n.value, states: statesOf(n), off: !!n.off,
+        depth, kind: 'control', role: roleName(n), name, value: n.value, states: n === pointed ? [...statesOf(n), '滑鼠指著'] : statesOf(n), off: !!n.off,
         target: { handle: n.handle, field: FIELDS.includes(n.role) },
       });
     }
@@ -101,10 +115,11 @@ export function treeNodes(res) {
   return nodes;
 }
 
-export function treeHeader(res) {
+export function treeHeader(res, pointed = null) {
   return [
     res.app ? `App：${res.app}${res.window?.title ? `；視窗：${res.window.title}` : ''}` : '最前面沒有 app',
     res.app && !res.window ? '（這個 app 沒有打開的視窗）' : '',
+    pointed ? '標「滑鼠指著」的是使用者講話時滑鼠指著的東西：他說「這個」「這裡」「點這」多半是指它' : '',
     res.menus?.length ? `選單列（用 menu 選裡面的項目）：${res.menus.join('、')}` : '',
     res.partial ? '（畫面很大，只讀了前面一部分；要的東西不在下面就捲動，或用選單列）' : '',
     res.ocr && !res.ocr.permission ? '（這個 app 讀不到畫面，要截圖認字，但 JarvisVoice 還沒有「螢幕錄影」權限）' : '',
@@ -129,18 +144,23 @@ function outcome(r, ref, extra = {}) {
 const pathOf = (raw) => (Array.isArray(raw) ? raw : String(raw ?? '').split(/\s*[>＞›/／]\s*/)).map((p) => String(p).trim()).filter(Boolean);
 
 // ax：bin/ax.mjs 的 createAx()；frontApp() → { pid }（每一步看最前面的那個 app，切到別的 app 就跟著看它）；
-// openApp(name) → 有沒有打開；openUrl(url) → 有沒有打開
-export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultOpenUrl, log = () => {}, maxNodes, budgetMs }) {
+// openApp(name) → 有沒有打開；openUrl(url) → 有沒有打開；
+// pointer：使用者講話時滑鼠在螢幕上的位置 { x, y }，只標在第一次讀的畫面上（動手之後畫面變了，同一個位置就不是他指的東西）
+export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultOpenUrl, log = () => {}, maxNodes, budgetMs, pointer = null }) {
   let pid = 0;
+  let reads = 0;
   const call = (op, args, timeoutMs) => ax.call(op, { pid, ...args }, timeoutMs).catch((err) => { log(`AX 小幫手 ${op} 失敗：${err.message}`); return null; });
 
   async function read() {
+    const first = reads === 0;
+    reads += 1;
     pid = (await frontApp()).pid;
     if (!pid) return { nodes: [], header: ['最前面沒有 app'] };
     const res = await call('tree', { maxNodes, budgetMs }, 20000);
     if (!res) return { nodes: [], header: ['讀不到最前面這個 app 的畫面'] };
-    log(`操作代理讀畫面：${res.app}，${res.nodes.length} 個，${res.ms} ms（讀樹 ${res.treeMs} ms，走了 ${res.seen} 個）${res.partial ? '（沒讀完）' : ''}${res.ocr ? '，截圖認字' : ''}`);
-    return { nodes: treeNodes(res), header: treeHeader(res) };
+    const pointed = first ? pointedNode(res, pointer) : null;
+    log(`操作代理讀畫面：${res.app}，${res.nodes.length} 個，${res.ms} ms（讀樹 ${res.treeMs} ms，走了 ${res.seen} 個）${res.partial ? '（沒讀完）' : ''}${res.ocr ? '，截圖認字' : ''}${pointed ? `，滑鼠指著「${pointed.name}」` : ''}`);
+    return { nodes: treeNodes(res, pointed), header: treeHeader(res, pointed) };
   }
 
   let header = [];

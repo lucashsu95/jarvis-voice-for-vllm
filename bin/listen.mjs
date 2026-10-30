@@ -907,11 +907,13 @@ async function runVoiceCommand(result, raw, front, ctx) {
     return '';
   }
   bubble('command', { text: result.goal });
+  // 滑鼠指著什麼：「點這個」「這裡」的「這」（講完到這裡只隔 AI 判斷的時間，滑鼠通常還在原地）
+  const pointer = await axCall('mouse', {}, 2000);
   const ai = service(aiSettings());
   let outcome;
   try {
     outcome = await runAgent({
-      screen: createMacAgentScreen({ ax, frontApp, openApp, log }),
+      screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer }),
       complete: (req) => ai.complete(req),
       goal,
       said: raw,

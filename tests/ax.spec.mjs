@@ -17,6 +17,11 @@ after(() => ax.close());
 
 const trusted = process.platform === 'darwin' && (await ax.call('check', { ask: false }).catch(() => ({}))).trusted;
 
+test('AX 小幫手：讀滑鼠位置（不用權限、不動滑鼠）', { skip: process.platform !== 'darwin' && '只有 macOS' }, async () => {
+  const p = await ax.call('mouse', {});
+  assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), JSON.stringify(p));
+});
+
 test('AX 小幫手：讀上下文、找輸入框、對焦、列元件；不在前景不貼', { skip: !trusted && '沒有輔助使用權限', timeout: 30_000 }, async () => {
   const win = spawn('/usr/bin/osascript', ['-l', 'JavaScript', join(import.meta.dirname, 'fixtures', 'test-window.js')], { stdio: 'ignore' });
   try {

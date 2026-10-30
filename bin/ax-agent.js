@@ -23,6 +23,8 @@
 //                                       menu 選單列（path）、clickAt／rightClickAt 在 (x, y) 點滑鼠（截圖認出來的字沒有元件可以按，用這個）
 //   ocr     { pid, ask }              → { permission, items: [{ text, x, y, w, h }] }：截最前面那個視窗（只在記憶體裡）認字；
 //                                       順序與接成文字由 bin/ax.mjs 用核心（core/ocr.mjs）處理
+//   mouse   {}                        → { x, y }：滑鼠在螢幕上的位置（左上角原點，跟 tree 的框框同一套座標）。
+//                                       滑鼠指著哪個東西由 bin/agent-screen.mjs 拿 tree 的框框比（AXUIElementCopyElementAtPosition 的 float 參數 JXA 傳不對）
 // 讀不到畫面的 app（例如 LINE：只有視窗按鈕和輸入框，畫面上的字讀不到）：context 的 screen、elements 會自動改用截圖認字補上
 ObjC.import('Cocoa');
 ObjC.import('ApplicationServices');
@@ -966,6 +968,10 @@ const OPS = {
   tree,
   act,
   ocr: (args) => ocr(args),
+  mouse: () => {
+    const p = $.CGEventGetLocation($.CGEventCreate($()));
+    return { x: p.x, y: p.y };
+  },
 };
 
 // ---- 主迴圈：一行一個請求 ----

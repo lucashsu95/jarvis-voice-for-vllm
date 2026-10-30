@@ -263,6 +263,36 @@ test('Mac 操作代理接頭：讀不到樹時截圖認出來的字補進沒有�
   assert.match(treeHeader({ app: 'LINE', window: {}, ocr: { permission: false, items: [] } }).join('\n'), /螢幕錄影/);
 });
 
+test('Mac 操作代理接頭：滑鼠指著的東西（包含那一點、面積最小、在畫面上）標「滑鼠指著」；指到視窗外、畫面外的不算；只標第一次讀的畫面', async () => {
+  const res = {
+    app: 'Google Chrome', window: { title: '新分頁', x: 0, y: 0, w: 800, h: 600 }, menus: [],
+    nodes: [
+      ctl(1, 'AXLink', 'Youtube', { x: 100, y: 100, w: 112, h: 112 }),
+      ctl(2, 'AXButton', '其他「Youtube」搜尋捷徑動作', { x: 180, y: 104, w: 28, h: 28 }),
+      ctl(3, 'AXLink', '說明', { x: 100, y: 100, w: 10, h: 10, off: true }),
+      { depth: 0, kind: 'scroll', name: '', states: [], handle: 4, x: 0, y: 0, w: 800, h: 600 },
+    ],
+  };
+  const pointedNode = (await import('../bin/agent-screen.mjs')).pointedNode;
+  assert.equal(pointedNode(res, { x: 150, y: 150 })?.handle, 1);
+  assert.equal(pointedNode(res, { x: 190, y: 110 })?.handle, 2, '疊在一起挑最小的');
+  assert.equal(pointedNode(res, { x: 105, y: 105 })?.handle, 1, '畫面外的不算');
+  assert.equal(pointedNode(res, { x: 900, y: 150 }), null, '視窗外（指著別的 app）');
+  assert.equal(pointedNode(res, { x: 500, y: 500 }), null, '沒指著能操作的東西');
+  assert.equal(pointedNode(res, null), null);
+
+  const pointed = pointedNode(res, { x: 150, y: 150 });
+  const view = writeTree(treeNodes(res, pointed), { header: treeHeader(res, pointed) });
+  assert.match(view.text, /\[e1\] 連結「Youtube」（滑鼠指著）/);
+  assert.match(view.text, /標「滑鼠指著」的是使用者講話時滑鼠指著的東西/);
+  assert.doesNotMatch(writeTree(treeNodes(res), { header: treeHeader(res) }).text, /滑鼠指著/, '沒給就跟原本一樣');
+
+  const ax = { async call(op) { if (op === 'tree') return { ...res, partial: false, seen: 1, treeMs: 1, ms: 1 }; throw new Error(op); } };
+  const screen = createMacAgentScreen({ ax, frontApp: async () => ({ pid: 42 }), openApp: async () => true, pointer: { x: 150, y: 150 } });
+  assert.match((await screen.snapshot()).text, /「Youtube」（滑鼠指著）/);
+  assert.doesNotMatch((await screen.snapshot()).text, /滑鼠指著/, '動手之後畫面變了，同一個位置不一定是他指的');
+});
+
 // 假的 AX 小幫手：tree 照 page 回，act 記下來、照劇本換頁
 function fakeAx(pages, start, onAct) {
   let page = start;
