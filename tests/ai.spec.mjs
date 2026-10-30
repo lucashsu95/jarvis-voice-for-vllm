@@ -16,7 +16,7 @@ const { buildPrompt, parseResult, editSegment } = await import('../bin/editor.mj
 const { loadConfig, aiKey, styleFor } = await import('../bin/config.mjs');
 const { rankTargets } = await import('../bin/targeter.mjs');
 const { createDecider, fieldQuestions } = await import('../bin/decide.mjs');
-const { createMacAgentScreen, treeNodes, treeHeader } = await import('../bin/agent-screen.mjs');
+const { createMacAgentScreen, treeNodes, treeHeader, destructiveText, destructiveKey } = await import('../bin/agent-screen.mjs');
 const { writeTree } = await import('../core/agentScreen.mjs');
 const { runAgent } = await import('../core/agent.mjs');
 const { extractEdited, replacedChunks } = await import('../bin/learn.mjs');
@@ -259,7 +259,7 @@ test('Mac 操作代理接頭：讀不到樹時截圖認出來的字補進沒有�
   assert.match(text, /\[e3\] 清單項目「微波烤箱廢物食堂」/);
   assert.match(text, /\[e4\] 按鈕「沒有名字」/);
   assert.match(text, /截圖認出來的字（讀不到結構，點下去是點那個位置）\n  \[e5\] 畫面上的字「你好帥」/);
-  assert.deepEqual(nodes.at(-1).target, { at: { x: 430, y: 410 } });
+  assert.deepEqual(nodes.at(-1).target, { at: { x: 430, y: 410 }, name: '你好帥' });
   assert.match(treeHeader({ app: 'LINE', window: {}, ocr: { permission: false, items: [] } }).join('\n'), /螢幕錄影/);
 });
 
@@ -317,6 +317,48 @@ test('Mac 操作代理接頭：點、填字之前先把要碰的東西的範圍�
     { x: 10, y: 10, w: 200, h: 24 }, 'act:fill',
     'act:scroll',
   ]);
+});
+
+test('破壞性操作不自己做：目標是刪除、解除安裝這類就不開始；按名字是這類的按鈕、選單、選項不按；刪除的組合鍵不按，Esc、Backspace、cmd+l 照常', async () => {
+  assert.equal(destructiveText('執行解除安裝 CV 的動作'), '解除安裝');
+  assert.equal(destructiveText('把這個檔案移到垃圾桶'), '移到垃圾桶');
+  assert.equal(destructiveText('Uninstall Zoom'), 'Uninstall');
+  assert.equal(destructiveText('打開台積電的走勢圖'), '');
+  assert.equal(destructiveText('在 Telegram 搜尋 A I Ku'), '');
+  // 清掉框裡的字不算；同一句裡的其他刪除照擋
+  for (const t of ['清空 YouTube 搜尋欄', '把搜尋框清空', '清除輸入框的文字']) assert.equal(destructiveText(t), '', t);
+  assert.equal(destructiveText('清空垃圾桶'), '清空');
+  assert.equal(destructiveText('清除瀏覽紀錄'), '清除');
+  assert.equal(destructiveText('清空搜尋欄然後刪除檔案'), '刪除');
+
+  for (const key of ['cmd+backspace', 'cmd+delete', 'cmd+shift+backspace', 'Command+Option+Delete']) assert.equal(destructiveKey(key), true, key);
+  for (const key of ['Escape', 'esc', 'Enter', 'Backspace', 'Delete', 'cmd+l', 'cmd+shift+t', 'shift+backspace']) assert.equal(destructiveKey(key), false, key);
+
+  const acts = [];
+  const ax = {
+    async call(op, args) {
+      if (op === 'tree') {
+        return {
+          app: 'Finder', window: { title: '應用程式', x: 0, y: 0, w: 800, h: 600 }, menus: ['檔案'], partial: false, seen: 1, treeMs: 1, ms: 1,
+          nodes: [ctl(1, 'AXButton', '移到垃圾桶'), ctl(2, 'AXButton', '打開'), ctl(3, 'AXPopUpButton', '動作')],
+        };
+      }
+      acts.push(args.action);
+      return { result: 'ok' };
+    },
+  };
+  const screen = createMacAgentScreen({ ax, frontApp: async () => ({ pid: 42 }), openApp: async () => true });
+  await screen.snapshot();
+  const trash = await screen.run({ tool: 'click', args: { ref: 'e1' } });
+  assert.equal(trash.ok, false);
+  assert.match(trash.note, /「移到垃圾桶」會刪東西/);
+  assert.equal((await screen.run({ tool: 'select', args: { ref: 'e3', option: '刪除' } })).ok, false);
+  assert.equal((await screen.run({ tool: 'press_key', args: { key: 'cmd+backspace' } })).ok, false);
+  assert.equal((await screen.run({ tool: 'menu', args: { path: ['檔案', '移到垃圾桶'] } })).ok, false);
+  assert.deepEqual(acts, [], '擋下來的一個都沒送到 AX 小幫手');
+  assert.equal((await screen.run({ tool: 'click', args: { ref: 'e2' } })).ok, true);
+  assert.equal((await screen.run({ tool: 'press_key', args: { key: 'Escape' } })).ok, true);
+  assert.deepEqual(acts, ['press', 'key']);
 });
 
 // 假的 AX 小幫手：tree 照 page 回，act 記下來、照劇本換頁

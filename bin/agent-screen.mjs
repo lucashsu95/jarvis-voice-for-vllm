@@ -28,6 +28,31 @@ const OPEN_SETTLE_MS = 1200; // 切換 app、打開網址之後等視窗出來
 const TARGET_MS = 500; // 要碰的東西先亮多久才動手
 const TARGET_TOOLS = ['click', 'right_click', 'fill', 'select', 'press_key'];
 
+// 會刪東西、收不回來的事不自己做（使用者 10/30 指示：破壞性操作盡量不要做）。核心只擋「最後按下去那一下」，
+// 這裡在 Mac 端多擋三處：一開始的目標（listen.mjs）、按名字是這類的按鈕與選單項目、刪除的組合鍵。
+// 一般的鍵（Esc、Enter、Backspace、cmd+l…）照常可以按
+const DESTRUCTIVE = /解除安裝|移除安裝|卸載|刪除|刪掉|移到垃圾桶|丟到垃圾桶|丟進垃圾桶|清空|清除|抹除|格式化|登出|關機|重新開機|重開機|uninstall|delete|move to trash|empty trash|erase|format disk|log ?out|sign ?out|shut ?down|restart/i;
+const FIELD_CLEAR = /(?:清空|清除)[^，。,;；]{0,12}?(?:搜尋|搜索|輸入|欄|框|文字)/g;
+const FIELD_CLEAR_AFTER = /(?:搜尋|搜索|輸入)[^，。,;；]{0,8}?(?:清空|清除)/g;
+const KEY_MODS = /^(cmd|command|⌘|ctrl|control|opt|option|alt|shift)$/;
+
+/** 目標或原話是不是刪東西這類的事：是就回那個詞（小框寫給人看），不是回空字串 */
+export function destructiveText(text) {
+  // 清空搜尋欄、清除輸入框裡的字：只是清掉框裡的字，先拿掉再看（「清空搜尋欄然後刪除檔案」的刪除照擋）
+  const rest = String(text ?? '').replace(FIELD_CLEAR, '').replace(FIELD_CLEAR_AFTER, '');
+  return rest.match(DESTRUCTIVE)?.[0] ?? '';
+}
+
+/** 刪除的組合鍵：有 cmd 又按 Backspace／Delete（Finder 的移到垃圾桶、清空垃圾桶、很多 app 的刪除）；單按 Backspace 是刪字，可以 */
+export function destructiveKey(key) {
+  const parts = String(key ?? '').toLowerCase().split('+').map((p) => p.trim());
+  const mods = parts.filter((p) => KEY_MODS.test(p));
+  const main = parts.filter((p) => !KEY_MODS.test(p));
+  return mods.some((m) => ['cmd', 'command', '⌘'].includes(m)) && main.some((m) => ['backspace', 'delete', 'forwarddelete'].includes(m));
+}
+
+const REFUSED = (what) => ({ ok: false, note: `「${what}」會刪東西、收不回來，不自己做：停在這裡，用 done 說明留給使用者自己按` });
+
 export const MAC_TOOLS = [
   ...standardTools(['click', 'fill']),
   { name: 'press_key', args: 'key（Enter、Escape、Tab、Backspace、ArrowDown、PageDown…；組合鍵寫成 cmd+l、cmd+shift+t）, ref（可省略：游標所在的地方）', about: '按一個鍵或組合鍵' },
@@ -105,14 +130,14 @@ export function treeNodes(res, pointed = null) {
       const name = n.name || (FIELDS.includes(n.role) || seen.length < 2 ? '' : seen);
       nodes.push({
         depth, kind: 'control', role: roleName(n), name, value: n.value, states: n === pointed ? [...statesOf(n), '滑鼠指著'] : statesOf(n), off: !!n.off,
-        target: { handle: n.handle, field: FIELDS.includes(n.role), ...(n.w > 0 && n.h > 0 ? { frame: { x: n.x, y: n.y, w: n.w, h: n.h } } : {}) },
+        target: { handle: n.handle, field: FIELDS.includes(n.role), name, ...(n.w > 0 && n.h > 0 ? { frame: { x: n.x, y: n.y, w: n.w, h: n.h } } : {}) },
       });
     }
   }
   const rest = shot.filter((_, i) => !used.has(i));
   if (rest.length) {
     nodes.push({ depth: 0, kind: 'group', role: '截圖認出來的字（讀不到結構，點下去是點那個位置）' });
-    for (const item of rest) nodes.push({ depth: 1, kind: 'control', role: '畫面上的字', name: item.text, target: { at: center(item) } });
+    for (const item of rest) nodes.push({ depth: 1, kind: 'control', role: '畫面上的字', name: item.text, target: { at: center(item), name: item.text } });
   }
   return nodes;
 }
@@ -179,6 +204,9 @@ export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultO
     async act(call_, target) {
       const args = call_.args ?? {};
       const ref = args.ref != null ? String(args.ref) : '';
+      if (call_.tool === 'click' && destructiveText(target?.name)) return REFUSED(target.name);
+      if (call_.tool === 'select' && destructiveText(args.option)) return REFUSED(String(args.option));
+      if (call_.tool === 'press_key' && destructiveKey(args.key)) return REFUSED(String(args.key));
       if (onTarget && target && TARGET_TOOLS.includes(call_.tool)) {
         // 截圖認出來的字只有一個點：亮那個點附近
         const frame = target.frame ?? (target.at ? { x: target.at.x - 30, y: target.at.y - 12, w: 60, h: 24 } : null);
@@ -227,6 +255,8 @@ export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultO
         if (call_.tool === 'menu') {
           const path = pathOf(args.path);
           if (!path.length) return { ok: false, note: '要給選單的名字' };
+          const bad = path.find((p) => destructiveText(p));
+          if (bad) return REFUSED(bad);
           const r = await call('act', { action: 'menu', path });
           if (r?.result === 'no-menu') return { ok: false, note: `選單列裡沒有「${path[r.level ?? 0] ?? path[0]}」${r.options?.length ? `（這一層有：${r.options.join('、')}）` : ''}` };
           return outcome(r, '');

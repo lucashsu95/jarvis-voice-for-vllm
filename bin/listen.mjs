@@ -31,7 +31,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createAx } from './ax.mjs';
-import { createMacAgentScreen } from './agent-screen.mjs';
+import { createMacAgentScreen, destructiveText } from './agent-screen.mjs';
 import { TurnSplitter, BATCH_BYTES, SAMPLE_RATE, findFfmpeg, parseFrontAppInfo } from './common.mjs';
 import { STATE_DIR, aiAvailable, aiKey, appAllowed, configMtime, cubelvAccount, isLiveModel, loadConfig, styleFor } from './config.mjs';
 import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment, service } from './editor.mjs';
@@ -911,24 +911,30 @@ async function runVoiceCommand(result, raw, front, ctx) {
   const pointer = await axCall('mouse', {}, 2000);
   const ai = service(aiSettings());
   let outcome;
-  // 做事中發光（app/ui.js）：畫面邊框和游標旁亮著；每一步要碰的東西先亮框框
-  emit({ type: 'glow', state: 'on' });
-  try {
-    outcome = await runAgent({
-      screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer, onTarget: (frame) => emit({ type: 'glow', state: 'target', frame }) }),
-      complete: (req) => ai.complete(req),
-      goal,
-      said: raw,
-      context: { app: ctx?.app ?? '' },
-      stopped: () => existsSync(PAUSED),
-      // 小框跟著顯示做到哪一步（核心 stepText：「第 1 步：點「Gmail」」）
-      onStep: (step) => bubble('command', { text: result.goal, detail: stepText(step, ZH ? 'zh' : 'en') }),
-      log,
-    });
-  } catch (err) {
-    outcome = { ok: false, reason: err.message, steps: [] };
-  } finally {
-    emit({ type: 'glow', state: 'off' });
+  // 刪東西、解除安裝、登出、關機這類收不回來的事，一開始就不做（原話也看：AI 整理出來的目標可能把字換掉）
+  const destructive = destructiveText(`${goal} ${raw}`);
+  if (destructive) {
+    outcome = { ok: false, reason: ZH ? `「${destructive}」這類會刪東西、收不回來的事不自己做，請自己來` : `"${destructive}" can't be undone, so JarvisVoice won't do it; please do it yourself`, steps: [] };
+  } else {
+    // 做事中發光（app/ui.js）：畫面邊框和游標旁亮著；每一步要碰的東西先亮框框
+    emit({ type: 'glow', state: 'on' });
+    try {
+      outcome = await runAgent({
+        screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer, onTarget: (frame) => emit({ type: 'glow', state: 'target', frame }) }),
+        complete: (req) => ai.complete(req),
+        goal,
+        said: raw,
+        context: { app: ctx?.app ?? '' },
+        stopped: () => existsSync(PAUSED),
+        // 小框跟著顯示做到哪一步（核心 stepText：「第 1 步：點「Gmail」」）
+        onStep: (step) => bubble('command', { text: result.goal, detail: stepText(step, ZH ? 'zh' : 'en') }),
+        log,
+      });
+    } catch (err) {
+      outcome = { ok: false, reason: err.message, steps: [] };
+    } finally {
+      emit({ type: 'glow', state: 'off' });
+    }
   }
   ctxCache = null;
   const steps = outcome.steps ?? [];
