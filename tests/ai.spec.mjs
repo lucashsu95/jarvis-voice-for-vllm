@@ -362,6 +362,14 @@ test('破壞性操作不自己做：目標是刪除、解除安裝這類就不�
   assert.deepEqual(acts, ['press', 'key']);
 });
 
+test('Mac 操作代理接頭：使用者的交代（設定檔 commandNotes）寫在畫面最前面，每一步都看得到', async () => {
+  const ax = { async call(op) { if (op === 'tree') return { app: 'Dia', window: { title: 'YouTube' }, menus: [], nodes: [ctl(1, 'AXButton', '首頁')], partial: false, seen: 1, treeMs: 1, ms: 1 }; throw new Error(op); } };
+  const screen = createMacAgentScreen({ ax, frontApp: async () => ({ pid: 42 }), openApp: async () => true, notes: '我只用 Dia 瀏覽器，絕對不要打開 Safari' });
+  for (let i = 0; i < 2; i += 1) assert.match((await screen.snapshot()).text, /^使用者交代（一定要照做）：我只用 Dia 瀏覽器，絕對不要打開 Safari\nApp：Dia/);
+  const plain = createMacAgentScreen({ ax, frontApp: async () => ({ pid: 42 }), openApp: async () => true });
+  assert.doesNotMatch((await plain.snapshot()).text, /使用者交代/);
+});
+
 // 假的 AX 小幫手：tree 照 page 回，act 記下來、照劇本換頁
 function fakeAx(pages, start, onAct) {
   let page = start;

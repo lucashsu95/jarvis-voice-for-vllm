@@ -46,6 +46,7 @@
 //   },
 //   "autoFocus": true,                 // 第三層：游標不在輸入框時，自動挑視窗裡要寫的輸入框寫進去
 //   "commands": true,                  // 第三層：講「進到台積電的個股頁」這類指令，直接操作 app（要有 AI 整理）
+//   "commandNotes": "",                // 給語音指令的交代，每一步都帶給 AI（例如「我只用 Dia 瀏覽器，絕對不要打開 Safari」）
 //   "jev": { "apiKey": "", "apiKeyFile": "", "apiKeyCommand": "", "model": "jev-latest" },
 //                                      // 第三層的決策器：TypeSafe 的 Jev（快、便宜）；沒有 key 就改問 AI 整理那家
 //   "speed": {                         // 講完到貼上的速度（cubelv_docs/計劃/2026-10-19_JarvisVoice語音加速規劃.md）
@@ -304,6 +305,7 @@ export function loadConfig() {
   }
   config.autoFocus = config.autoFocus !== false;
   config.commands = config.commands !== false;
+  config.commandNotes = typeof config.commandNotes === 'string' ? config.commandNotes.trim() : '';
   // 沒指定 AI 用哪家：挑已經有 key 的；openai-compatible 要連 baseUrls 都設了才算
   const candidates = config.ai.baseUrls['openai-compatible'] ? ['deepseek', 'claude', 'openai', 'openai-compatible'] : ['deepseek', 'claude', 'openai'];
   if (!file.ai?.provider) config.ai.provider = candidates.find((p) => aiKey(config, p)) ?? base.ai.provider;

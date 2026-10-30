@@ -940,7 +940,7 @@ async function runVoiceCommand(result, raw, front, ctx) {
     emit({ type: 'glow', state: 'on' });
     try {
       outcome = await runAgent({
-        screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer, onTarget: (frame) => emit({ type: 'glow', state: 'target', frame }) }),
+        screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer, notes: config.commandNotes, onTarget: (frame) => emit({ type: 'glow', state: 'target', frame }) }),
         complete: (req) => ai.complete(req),
         goal,
         said: raw,

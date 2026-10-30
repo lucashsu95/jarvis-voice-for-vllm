@@ -62,7 +62,7 @@ export const MAC_TOOLS = [
 
 export const MAC_APP_TOOLS = [
   { name: 'menu', args: 'path（選單列一層層的名字，例如 ["檔案", "新增視窗"]）', about: '選選單列裡的項目（這個 app 的指令都在選單列）' },
-  { name: 'open_app', args: 'name（app 名稱，例如 LINE、Safari、系統設定）', about: '打開或切換到某個 app' },
+  { name: 'open_app', args: 'name（app 名稱，例如 LINE、Finder、系統設定）', about: '打開或切換到某個 app' },
   { name: 'open_url', args: 'url', about: '用預設瀏覽器打開網址' },
 ];
 
@@ -173,8 +173,9 @@ const pathOf = (raw) => (Array.isArray(raw) ? raw : String(raw ?? '').split(/\s*
 // ax：bin/ax.mjs 的 createAx()；frontApp() → { pid }（每一步看最前面的那個 app，切到別的 app 就跟著看它）；
 // openApp(name) → 有沒有打開；openUrl(url) → 有沒有打開；
 // pointer：使用者講話時滑鼠在螢幕上的位置 { x, y }，只標在第一次讀的畫面上（動手之後畫面變了，同一個位置就不是他指的東西）；
-// onTarget(frame)：要點、填字、選、按鍵的那個東西在螢幕上的範圍（左上角原點），通知完等 TARGET_MS 才動手，讓人看得到下一步要碰哪裡
-export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultOpenUrl, log = () => {}, maxNodes, budgetMs, pointer = null, onTarget = null }) {
+// onTarget(frame)：要點、填字、選、按鍵的那個東西在螢幕上的範圍（左上角原點），通知完等 TARGET_MS 才動手，讓人看得到下一步要碰哪裡；
+// notes：使用者的交代（設定檔 commandNotes），寫在畫面最前面
+export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultOpenUrl, log = () => {}, maxNodes, budgetMs, pointer = null, onTarget = null, notes = '' }) {
   let pid = 0;
   let reads = 0;
   const call = (op, args, timeoutMs) => ax.call(op, { pid, ...args }, timeoutMs).catch((err) => { log(`AX 小幫手 ${op} 失敗：${err.message}`); return null; });
@@ -196,7 +197,7 @@ export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultO
     tools: MAC_TOOLS,
     async read() {
       const view = await read();
-      header = view.header;
+      header = notes ? [`使用者交代（一定要照做）：${notes}`, ...view.header] : view.header;
       return view.nodes;
     },
     header: () => header,
