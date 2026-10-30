@@ -46,6 +46,7 @@ import { createDecider, intentQuestion } from './decide.mjs';
 import { createLearner } from './learn.mjs';
 import { createVocabAuto } from './vocab-auto.mjs';
 import { finishText, isSpeech, withSpacing } from './text.mjs';
+import { isSearchField, searchQuery } from './voice-search.mjs';
 // 一段話講完之後怎麼處理、幾句合成一段、小框的階段：都在核心（CubeLV、平行沙盒同一份），這裡只接 Mac 的接頭
 import { judgeInField, judgeUtterance, pickTarget, planOutput } from '../core/flow.mjs';
 import { createSegmenter, heardText, speechBubble } from '../core/segment.mjs';
@@ -893,6 +894,25 @@ const openApp = (name) => new Promise((resolve) => {
   execFile('/usr/bin/open', ['-a', name], { timeout: 5000 }, (err) => resolve(!err));
 });
 
+// 搜尋框：填字（換掉框裡原本的字）→ 按 Enter。回 false 表示沒填進去，呼叫的人照常貼上
+async function searchInField(front, ctx, query, raw) {
+  const handle = ctx.field.handle;
+  const filled = await axCall('act', { pid: front.pid, handle, action: 'fill', text: query }, 6000);
+  if (filled?.result !== 'ok') {
+    log(`搜尋框填字沒成功（${filled?.result ?? '小幫手沒回'}），改成照常貼上`);
+    return false;
+  }
+  const entered = await axCall('act', { pid: front.pid, handle, action: 'key', key: 'Enter' }, 6000);
+  log(`搜尋：${query}${entered?.result === 'ok' ? '（填好按了 Enter）' : `（填好了，Enter 沒按成：${entered?.result ?? '小幫手沒回'}）`}`);
+  ctxCache = null;
+  hudWrite('pasted');
+  bubble('done', { text: ZH ? `搜尋「${query}」` : `Search "${query}"` });
+  writeLast(query);
+  emit({ type: 'searched', query, raw });
+  if (config.ai.history) appendHistory({ app: ctx?.app ?? '', bundle: front.bundle, raw, mode: 'search', text: query, ok: entered?.result === 'ok' });
+  return true;
+}
+
 // 第三層（指令）：交給核心的操作代理（core/agent.mjs 的 runAgent，CubeLV 同一套）：每一步讀最前面那個 app 的畫面
 // （bin/agent-screen.mjs），AI 挑工具做，做到畫面就是目標。傳訊息給某人也一樣，要寫的訊息、要去的 app 放進目標裡
 async function runVoiceCommand(result, raw, front, ctx) {
@@ -1021,6 +1041,9 @@ async function deliver(item, front) {
     log('整段只有語氣詞，不寫：', raw);
     return '';
   }
+  // 游標在搜尋框、講「查詢 XXX」：填好直接按 Enter 搜下去（替你按，所以要開指令模式）；填不進去就照常貼上
+  const query = commandsOn() && inField && !dryPaste && isSearchField(ctx?.field) ? searchQuery(plan.text) || searchQuery(raw) : '';
+  if (query && await searchInField(front, ctx, query, raw)) return '';
   const result = plan.result ?? null;
   if (!inField) {
     const chosen = config.autoFocus ? await (pick ?? pickField(front.pid, plan.text, ctx)) : null;

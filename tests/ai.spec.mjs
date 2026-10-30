@@ -17,6 +17,7 @@ const { loadConfig, aiKey, styleFor } = await import('../bin/config.mjs');
 const { rankTargets } = await import('../bin/targeter.mjs');
 const { createDecider, fieldQuestions } = await import('../bin/decide.mjs');
 const { createMacAgentScreen, treeNodes, treeHeader, destructiveText, destructiveKey } = await import('../bin/agent-screen.mjs');
+const { isSearchField, searchQuery } = await import('../bin/voice-search.mjs');
 const { writeTree } = await import('../core/agentScreen.mjs');
 const { runAgent } = await import('../core/agent.mjs');
 const { extractEdited, replacedChunks } = await import('../bin/learn.mjs');
@@ -747,4 +748,20 @@ test('游標在輸入框時算不算指令：Jev 很確定，或滿確定而且�
   assert.equal(inFieldVerdict(answer(0.82, 'none'), items).isCommand, false); // 「你切到另一個分支再跑一次測試」
   assert.equal(inFieldVerdict(answer(0.63, 'e1'), items).isCommand, false);
   assert.equal(inFieldVerdict(answer(0.8, 'e0', 0.3), items).isCommand, false); // 講到哪個不確定
+});
+
+test('搜尋框裡講「查詢 XXX」：認得搜尋框和搜尋動詞，拿掉動詞與句尾標點；單一個「查」「找」不算', () => {
+  assert.equal(isSearchField({ editable: true, role: 'AXComboBox', label: '搜尋' }), true); // YouTube
+  assert.equal(isSearchField({ editable: true, role: 'AXTextField', subrole: 'AXSearchField', label: '' }), true);
+  assert.equal(isSearchField({ editable: true, role: 'AXTextField', label: 'Search' }), true);
+  assert.equal(isSearchField({ editable: true, role: 'AXTextArea', label: '訊息' }), false);
+  assert.equal(isSearchField({ editable: false, role: 'AXSearchField' }), false);
+
+  assert.equal(searchQuery('查詢 Michael Jackson'), 'Michael Jackson');
+  assert.equal(searchQuery('幫我搜尋台積電。'), '台積電');
+  assert.equal(searchQuery('我要查詢「Bad」'), 'Bad');
+  assert.equal(searchQuery('search for lo-fi music'), 'lo-fi music');
+  assert.equal(searchQuery('查理是誰'), '');
+  assert.equal(searchQuery('找不到檔案'), '');
+  assert.equal(searchQuery('我想看第一部影片'), '');
 });
