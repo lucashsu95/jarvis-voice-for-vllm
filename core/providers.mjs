@@ -1,7 +1,9 @@
 // JarvisVoice 核心：「自己的 key」直接打各家模型與 TypeSafe Jev（用 fetch，Node 18+ 和瀏覽器都能跑）。
 // CubeLV、平行沙盒不用這個，改接自己的後端（扣點數、平台吸收）。
 
-export const PROVIDERS = ['openai', 'deepseek', 'claude', 'openai-compatible'];
+import { hedge } from './hedge.mjs';
+
+export const PROVIDERS = ['openai', 'deepseek', 'claude', 'openai-compatible', 'cubelv'];
 export const DEFAULT_MODELS = { openai: 'gpt-6-luna', deepseek: 'deepseek-flash', claude: 'claude-haiku-5-5', 'openai-compatible': '' };
 export const PROVIDER_NAMES = { openai: 'OpenAI', deepseek: 'DeepSeek', claude: 'Claude', 'openai-compatible': 'OpenAI 相容（vLLM）' };
 export const DEFAULT_URLS = {
@@ -86,20 +88,22 @@ async function askJev({ apiKey, model = 'jev-latest', state, questions, timeoutM
 }
 
 // 自己的 key 的服務：{ complete, jev }。provider 是 openai／deepseek／claude；沒有 jevKey 就沒有 jev（決策改問 complete）
-export function ownKeyService({ provider = 'openai', model = '', apiKey = '', jevKey = '', jevModel = 'jev-latest', timeoutMs = 6000, urls = {}, extraBody = {} } = {}) {
+// hedge：complete 同時送幾份、誰先回用誰（core/hedge.mjs），預設 1 份
+export function ownKeyService({ provider = 'openai', model = '', apiKey = '', jevKey = '', jevModel = 'jev-latest', timeoutMs = 6000, urls = {}, extraBody = {}, hedge: copies = 1 } = {}) {
   if (!PROVIDERS.includes(provider)) throw new Error(`ai.provider 只能是 ${PROVIDERS.join('、')}`);
   const u = { ...DEFAULT_URLS, ...urls };
   if (provider === 'openai-compatible' && !u['openai-compatible']) {
     throw new Error('openai-compatible 要在設定檔 ai.baseUrls["openai-compatible"] 寫 chat/completions 的完整網址');
   }
   const chosen = model || DEFAULT_MODELS[provider];
+  const once = async ({ system, user, schema = null, timeoutMs: t = timeoutMs, signal: cancel, onMeta }) => {
+    const signal = cancel ? AbortSignal.any([cancel, AbortSignal.timeout(t)]) : AbortSignal.timeout(t);
+    if (provider === 'claude') return callClaude({ apiKey, model: chosen, system, user, signal, url: u.claude, onMeta });
+    return callChat({ provider, apiKey, model: chosen, system, user, schema, signal, url: u[provider], extraBody, onMeta });
+  };
   return {
     model: chosen,
-    complete: apiKey ? async ({ system, user, schema = null, timeoutMs: t = timeoutMs, onMeta }) => {
-      const signal = AbortSignal.timeout(t);
-      if (provider === 'claude') return callClaude({ apiKey, model: chosen, system, user, signal, url: u.claude, onMeta });
-      return callChat({ provider, apiKey, model: chosen, system, user, schema, signal, url: u[provider], extraBody, onMeta });
-    } : null,
+    complete: apiKey ? hedge(once, copies) : null,
     jev: jevKey ? ({ state, questions }) => askJev({ apiKey: jevKey, model: jevModel, state, questions, url: u.jev }) : null,
   };
 }

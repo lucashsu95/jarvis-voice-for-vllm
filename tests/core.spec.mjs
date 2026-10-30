@@ -99,22 +99,19 @@ test('核心的決策器：有 Jev 用 Jev；Jev 拿不準時改問 AI；都沒�
   await assert.rejects(core.createDecider(() => ({})).decide({}, { intent: core.intentQuestion() }), /做不了決策/);
 });
 
-test('核心的指令：畫面接頭傳假的進去，一步步做到完成', async () => {
+test('核心的操作代理：App 只給讀畫面、動手，結構樹與每一步都在核心', async () => {
   let step = 0;
-  const screens = [
-    [{ handle: 1, role: 'AXButton', label: '設定', x: 0, y: 0, w: 50, h: 20 }],
-    [{ handle: 2, role: 'AXButton', label: '通知', x: 0, y: 0, w: 50, h: 20 }],
-  ];
   const acts = [];
-  const screen = {
-    elements: async () => ({ window: { title: `w${step}` }, elements: screens[Math.min(step, 1)] }),
-    act: async (req) => { acts.push(req); step += 1; return { result: 'ok' }; },
-  };
-  const plan = ['click', 'done'];
-  const decider = { engine: () => '假', canEscalate: () => false, decide: async (state) => ({ action: { choice: plan[state.done_steps.length], confidence: 0.9 }, target: { choice: 'e0', confidence: 0.9 } }) };
-  const r = await core.runCommand({ screen, decider, goal: '打開設定' });
+  const screen = core.createAgentScreen({
+    tools: core.standardTools(['click']),
+    read: () => [{ depth: 0, kind: 'control', role: '按鈕', name: step ? '通知' : '設定', target: step ? 2 : 1 }],
+    act: (call, target) => { acts.push(target); step += 1; return { ok: true }; },
+    settle: async () => {},
+  });
+  const replies = [{ tool: 'click', args: { ref: 'e1' }, why: '進設定' }, { tool: 'done', args: { summary: '設定' }, why: '到了' }];
+  const r = await core.runAgent({ screen, complete: async () => JSON.stringify(replies.shift()), goal: '打開設定' });
   assert.equal(r.ok, true);
-  assert.deepEqual(acts, [{ handle: 1, action: 'press' }]);
+  assert.deepEqual(acts, [1]);
 });
 
 test('核心的詞彙自動更新：存放接頭傳記憶體版也能用', () => {
@@ -127,21 +124,41 @@ test('核心的詞彙自動更新：存放接頭傳記憶體版也能用', () =>
   assert.ok(state.terms.JarvisVoice);
 });
 
-test('同步腳本：複製核心並在每個檔案寫上來源 commit', async () => {
-  const { execFileSync } = await import('node:child_process');
-  const { mkdtempSync, readFileSync: read, readdirSync: list } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const dest = mkdtempSync(join(tmpdir(), 'jarvis-core-'));
-  try {
-    execFileSync(join(import.meta.dirname, '..', 'scripts', 'sync-core.sh'), [dest], { stdio: 'pipe' });
-  } catch (err) {
-    // core/ 還有沒 commit 的改動時腳本會拒絕：開發中略過
-    if (String(err.stderr).includes('還沒 commit')) return;
-    throw err;
-  }
-  const sha = read(join(dest, 'CORE_COMMIT'), 'utf8').trim();
-  assert.ok(list(dest).includes('index.mjs'));
-  assert.match(read(join(dest, 'editor.mjs'), 'utf8'), new RegExp(`^// 從 jarvis-voice core@${sha} 同步`));
-  const synced = await import(join(dest, 'index.mjs'));
-  assert.equal(typeof synced.editSegment, 'function');
+test('聲紋：先錄 10 秒樣本（混進來的別人剔除）；之後像的放行、不像的擋；短句另外用短句的門檻；很確定的句子加進最近的聲音', () => {
+  // 假的聲紋：使用者在 x 軸附近，別人在 y 軸附近（8 維，加一點雜訊）
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+  const voice = (axis) => core.normalize(Array.from({ length: 8 }, (_, i) => (i === axis ? 1 : 0) + rand() * 0.2));
+  const vp = core.createVoiceprint();
+  assert.equal(vp.enrolled(), false);
+  assert.equal('needSeconds' in vp, false, '聲紋在背景學：核心不給還要講幾秒');
+  // 錄樣本：收滿 10 秒（自己 3 句、中間混一句別人）
+  assert.equal(vp.judge(voice(0), 3).verdict, 'enrolling');
+  assert.equal(vp.judge(voice(1), 3).verdict, 'enrolling');
+  assert.equal(vp.judge(voice(0), 3).verdict, 'enrolling');
+  const done = vp.judge(voice(0), 3);
+  assert.equal(done.verdict, 'enrolled');
+  assert.equal(done.kept, 3, '別人那句不算進樣本');
+  const mine = vp.judge(voice(0), 3);
+  assert.equal(mine.pass, true);
+  assert.equal(mine.verdict, 'mine');
+  const other = vp.judge(voice(1), 3);
+  assert.equal(other.pass, false);
+  assert.ok(other.score < core.VOICEPRINT_THRESHOLD);
+  // 短句：像的放行，不像的擋（短句的門檻）
+  assert.equal(vp.judge(voice(0), 1).verdict, 'short');
+  const shortOther = vp.judge(voice(1), 1);
+  assert.equal(shortOther.pass, false);
+  assert.ok(shortOther.score < core.VOICEPRINT_SHORT_THRESHOLD);
+  // 講到一半停頓時只看不記
+  const before = JSON.stringify(vp.state());
+  assert.equal(vp.judge(voice(0), 3, { dryRun: true }).verdict, 'mine');
+  assert.equal(JSON.stringify(vp.state()), before);
+  assert.ok(vp.state().recent.length >= 1, '很確定的句子加進最近的聲音');
+  // 存檔再讀回來一樣能判斷
+  const again = core.createVoiceprint({ state: JSON.parse(JSON.stringify(vp.state())) });
+  assert.equal(again.enrolled(), true);
+  assert.equal(again.judge(voice(1), 3).pass, false);
+  vp.reset();
+  assert.equal(vp.enrolled(), false);
 });

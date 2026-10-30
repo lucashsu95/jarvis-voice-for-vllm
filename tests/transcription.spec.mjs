@@ -114,6 +114,155 @@ test('TurnSplitter：開口前 0.4 秒一起送，沒講話的聲音不送', () 
   assert.deepEqual(turn, { startMs: 600, endMs: 900 });
 });
 
+test('TurnSplitter 暫定斷句：停 0.4 秒先報一次 tentative，又開口報 resumed，停滿 0.85 秒照常切句', () => {
+  const s = new core.TurnSplitter();
+  for (let n = 0; n < 3; n += 1) s.push(batch(0.08), n * 100);
+  assert.equal(s.speaking, true);
+  const events = [];
+  const feed = (level, count, at) => {
+    for (let n = 0; n < count; n += 1) {
+      const r = s.push(batch(level), at + n * 100);
+      if (r.tentative) events.push(`tentative@${at + n * 100}`);
+      if (r.resumed) events.push(`resumed@${at + n * 100}`);
+      if (r.turn) events.push(`turn@${at + n * 100}`);
+    }
+  };
+  feed(0, 5, 300); // 停 0.5 秒：第 4 批（400 ms）報 tentative
+  feed(0.08, 2, 800); // 又開口
+  feed(0, 9, 1000); // 停滿 0.85 秒切句，中間 400 ms 再報一次
+  assert.deepEqual(events, ['tentative@600', 'resumed@800', 'tentative@1300', 'turn@1800']);
+  // tentativeMs 0：不報
+  const off = new core.TurnSplitter({ tentativeMs: 0 });
+  for (let n = 0; n < 3; n += 1) off.push(batch(0.08), n * 100);
+  for (let n = 0; n < 9; n += 1) assert.equal(off.push(batch(0), 300 + n * 100).tentative, false);
+});
+
+test('斷句：風扇聲裡（底噪約 0.009）正常講話的尖峰 0.10 預設聽不到，peakOverNoise 9 聽得到；沒人講話的尖峰（約 7.5 倍）兩種都不算', () => {
+  // 一批 2400 個樣本：底噪是均勻的小雜訊（RMS 約 0.009），講話是同樣的雜訊上每 20 個樣本一個尖峰
+  const noisy = (rms, peak = 0) => {
+    const b = new Int16Array(2400);
+    for (let i = 0; i < b.length; i += 1) b[i] = Math.round((i % 2 ? 1 : -1) * rms * 32767);
+    if (peak) for (let i = 0; i < b.length; i += 20) b[i] = Math.round(peak * 32767);
+    return b;
+  };
+  const run = (opts) => {
+    const d = new core.AudioTurnDetector(opts);
+    for (let n = 0; n < 30; n += 1) d.push(noisy(0.009), n * 100); // 3 秒底噪
+    const ambient = [0.066, 0.066, 0.066].map((p, n) => (d.push(noisy(0.009, p), 3000 + n * 100), d.speaking));
+    for (let n = 0; n < 3; n += 1) d.push(noisy(0.009), 3300 + n * 100);
+    for (let n = 0; n < 3; n += 1) d.push(noisy(0.009, 0.1), 3600 + n * 100);
+    return { ambient: ambient.some(Boolean), speech: d.speaking, peak: d.thresholds().peak };
+  };
+  const before = run();
+  assert.equal(before.speech, false, `預設門檻 ${before.peak.toFixed(3)}`);
+  const mac = run({ peakOverNoise: 9 });
+  assert.equal(mac.ambient, false);
+  assert.equal(mac.speech, true, `9 倍門檻 ${mac.peak.toFixed(3)}`);
+  // 安靜的房間：尖峰門檻不低於 0.055
+  assert.ok(Math.abs(new core.AudioTurnDetector({ peakOverNoise: 9 }).thresholds().peak - 0.055) < 1e-9);
+});
+
+test('斷句：一直講不停時，底噪不被自己的聲音拉高，後面小聲一點的話還在這句裡；講話中環境真的變吵，底噪會慢慢跟上、不會一直不斷句', () => {
+  // Mac 10/25 實錄：一直講時底噪從 0.012 被自己的聲音拉到 0.0205，門檻跟著漲，句尾小聲的字被當成停頓，那句被切掉、轉寫結尾變「……」
+  const level = (rms) => {
+    const b = new Int16Array(2400);
+    for (let i = 0; i < b.length; i += 1) b[i] = Math.round((i % 2 ? 1 : -1) * rms * 32767);
+    return b;
+  };
+  const d = new core.AudioTurnDetector({ peakOverNoise: 9 });
+  let t = 0;
+  const feed = (rms, seconds) => {
+    let turn = null;
+    for (let n = 0; n < seconds * 10; n += 1, t += 100) turn = d.push(level(rms), t) ?? turn;
+    return turn;
+  };
+  feed(0.011, 3); // 風扇聲
+  assert.equal(feed(0.06, 5), null); // 一直講 5 秒
+  assert.equal(d.speaking, true);
+  assert.ok(d.noiseLevel() < 0.02, `底噪 ${d.noiseLevel().toFixed(4)}`);
+  assert.equal(feed(0.035, 1.5), null, '句尾小聲一點的話還在這句裡'); // 原本底噪被拉到 0.06，講話中門檻 0.12，這 1.5 秒會被當成停頓切掉
+  assert.equal(d.speaking, true);
+  const ended = feed(0.011, 1);
+  assert.ok(ended, '真的停了照常切句');
+  // 講到一半環境變吵（例如開了吸塵器）：一直有聲音也不會永遠不斷句
+  feed(0.011, 3);
+  feed(0.06, 0.5);
+  assert.equal(d.speaking, true);
+  assert.ok(feed(0.08, 40), '底噪慢慢跟上，這句會切掉');
+});
+
+test('斷句：剛開麥克風、底噪還沒量好時就開始的那句，底噪照常跟著環境走，環境比固定門檻吵不會拖成一長句', () => {
+  // Mac 10/25：麥克風重開後環境 RMS 0.012～0.02（遠處小聲的人聲）比固定門檻 0.011 大，一開就算開口；底噪要跟上，這句才會結束
+  const level = (rms) => {
+    const b = new Int16Array(2400);
+    for (let i = 0; i < b.length; i += 1) b[i] = Math.round((i % 2 ? 1 : -1) * rms * 32767);
+    return b;
+  };
+  const d = new core.AudioTurnDetector({ peakOverNoise: 9 });
+  let turn = null;
+  let t = 0;
+  for (; t < 8000 && !turn; t += 100) turn = d.push(level(t % 300 ? 0.014 : 0.02), t);
+  assert.ok(turn, '環境聲音不會一直算成同一句');
+  assert.ok(turn.endMs - turn.startMs < 3000, `${turn.endMs - turn.startMs} ms`);
+});
+
+test('斷句：有聲音但還不到 180 ms 時是 starting（還不知道是開口還是雜音）', () => {
+  const d = new core.AudioTurnDetector();
+  d.push(new Int16Array(2400), 0);
+  assert.equal(d.starting, false);
+  d.push(batch(0.08), 100);
+  assert.equal(d.starting, true);
+  d.push(batch(0.08), 200);
+  assert.equal(d.speaking, true);
+  assert.equal(d.starting, false);
+});
+
+test('雙發：誰先成功用誰、其他的取消；一份失敗用另一份；全部失敗丟第一份的錯', async () => {
+  const aborted = [];
+  const call = (plan) => ({ signal, n }) => new Promise((resolve, reject) => {
+    const [ms, value, fail] = plan[n];
+    const timer = setTimeout(() => (fail ? reject(new Error(value)) : resolve(value)), ms);
+    signal.addEventListener('abort', () => { clearTimeout(timer); aborted.push(n); reject(new Error('aborted')); });
+  });
+  let n = 0;
+  const wrap = (fn) => (args) => fn({ ...args, n: n++ });
+  assert.equal(await core.hedge(wrap(call([[200, '慢'], [10, '快']])), 2)({}), '快');
+  assert.deepEqual(aborted, [0]);
+  n = 0;
+  assert.equal(await core.hedge(wrap(call([[5, 'boom', true], [30, '另一份']])), 2)({}), '另一份');
+  n = 0;
+  await assert.rejects(core.hedge(wrap(call([[5, '第一份壞了', true], [10, '第二份也壞了', true]])), 2)({}), /第一份壞了/);
+  const plain = async () => 'x';
+  assert.equal(core.hedge(plain, 1), plain);
+});
+
+test('雙發：沒有 AbortSignal.any（iOS 17.4 以前的 WebView）也照樣跑，外面取消時兩份都取消', async () => {
+  const any = AbortSignal.any;
+  AbortSignal.any = undefined;
+  try {
+    const aborted = [];
+    let n = 0;
+    const call = ({ signal }) => {
+      const i = n++;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(`第 ${i} 份`), i === 0 ? 50 : 10);
+        signal.addEventListener('abort', () => { clearTimeout(timer); aborted.push(i); reject(new Error('aborted')); });
+      });
+    };
+    assert.equal(await core.hedge(call, 2)({ signal: new AbortController().signal }), '第 1 份');
+    assert.deepEqual(aborted, [0]);
+    aborted.length = 0;
+    n = 0;
+    const outer = new AbortController();
+    const pending = core.hedge(call, 2)({ signal: outer.signal });
+    outer.abort();
+    await assert.rejects(pending, /aborted/);
+    assert.deepEqual(aborted.sort(), [0, 1]);
+  } finally {
+    AbortSignal.any = any;
+  }
+});
+
 test('即時轉寫：連線斷在一句話中間，重連後把還沒轉的聲音補送，舊連線的半句收掉不重複', async () => {
   let urls = 0;
   const { session, items, errors, speak } = startSpeech(async () => `wss://transcribe/${++urls}`);
@@ -299,4 +448,132 @@ test('即時轉寫（Mac 小程式）：有聲音才連線；帶 header 與 sess
   await tick();
   assert.equal(FakeSocket.all.length, 2);
   t.close();
+});
+
+// 提早轉寫（earlyTranscribe）：講 1 秒、停 0.5 秒、再講 0.5 秒、停 1 秒。不提早是一句；停 0.4 秒就先 commit
+const pauseThenResume = (speak) => { speak(10); speak(5, 0); speak(5); speak(10, 0); };
+const sentAudio = (socket) => socket.sent.filter((e) => e.type === 'input_audio_buffer.append' || e.type === 'input_audio_buffer.commit');
+
+test('提早轉寫預設關：停 0.5 秒不切，整段一句', async () => {
+  const { session, speak } = startSpeech();
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  pauseThenResume(speak);
+  assert.equal(socket.commits(), 1);
+  session.close();
+});
+
+test('提早轉寫 split：停 0.4 秒先 commit，又開口的是新的一句；聲音不重送，句尾的靜音不送', async () => {
+  const off = startSpeech();
+  await tick();
+  FakeSocket.all[0].open();
+  pauseThenResume(off.speak);
+  await tick(260);
+  const baseline = FakeSocket.all[0].audioBytes();
+  off.session.close();
+
+  FakeSocket.all = [];
+  const transcripts = [];
+  const { session, items, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: 'split', onTranscript: (t) => transcripts.push(t) });
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  speak(10);
+  speak(4, 0);
+  assert.equal(socket.commits(), 1); // 停 0.4 秒：先 commit
+  speak(1, 0);
+  speak(5);
+  speak(10, 0);
+  await tick(260);
+  assert.equal(socket.commits(), 2); // 又開口那段在它自己停 0.4 秒時 commit，0.85 秒斷句時不再 commit
+  // 少送的是第二段停 0.4 秒以後的靜音（5 批，含斷句那批）；第一段後面的停頓跟著第二段送
+  assert.equal(socket.audioBytes(), baseline - 5 * 4800);
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'a' });
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'b' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'a', transcript: '我覺得可以，' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'b', transcript: '但是預算要再算。' });
+  assert.equal(await session.finish(), '我覺得可以，但是預算要再算。');
+  assert.ok(items.get('b').startMs > items.get('a').startMs + 1000); // 第二段的時間從又開口算
+});
+
+test('提早轉寫 resend：又開口時先送的那份作廢、整句從頭重送，字跟不提早一樣只有一句', async () => {
+  const transcripts = [];
+  const logs = [];
+  const { session, items, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: 'resend', onTranscript: (t) => transcripts.push(t), log: (m) => logs.push(m) });
+  await tick();
+  const socket = FakeSocket.all[0];
+  socket.open();
+  speak(10);
+  speak(4, 0);
+  assert.equal(socket.commits(), 1);
+  const firstPiece = socket.audioBytes();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'early' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'early', delta: '我覺得可以' });
+  speak(1, 0);
+  speak(5); // 又開口：作廢、重送
+  assert.ok(logs.some((m) => /early commit discarded, resent/.test(m)));
+  // 作廢那句的字不算進全文，但畫面上先留著，等重送那句有字才換掉
+  assert.equal(transcripts.at(-1), '我覺得可以');
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'early', transcript: '我覺得可以。' });
+  assert.equal(transcripts.at(-1), '我覺得可以。');
+  assert.equal(items.get('early').text, '');
+  speak(10, 0);
+  await tick(260);
+  assert.equal(socket.commits(), 2);
+  // 兩次 commit 之間送的是整句從頭：先送過的 14 批（10 批講話＋停 4 批）再送一次，加上第 5 批停頓、又開口的 5 批、停 0.4 秒的 4 批
+  const ops = sentAudio(socket);
+  const lastCommit = ops.findLastIndex((e) => e.type === 'input_audio_buffer.commit');
+  const firstCommit = ops.findIndex((e) => e.type === 'input_audio_buffer.commit');
+  const resent = ops.slice(firstCommit + 1, lastCommit).reduce((sum, e) => sum + Buffer.from(e.audio, 'base64').length, 0);
+  assert.equal(resent, firstPiece + (1 + 5 + 4) * 4800);
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'whole' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'whole', delta: '我覺得可以，' });
+  assert.equal(transcripts.at(-1), '我覺得可以，'); // 重送那句一出字，作廢那句就不顯示
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'whole', transcript: '我覺得可以，但是預算要再算。' });
+  assert.equal(transcripts.at(-1), '我覺得可以，但是預算要再算。');
+  assert.equal(await session.finish(), '我覺得可以，但是預算要再算。');
+});
+
+test('提早轉寫：停 0.4 秒先送後就按停止，不再 commit，直接等先送的那份', async () => {
+  for (const mode of ['split', 'resend']) {
+    FakeSocket.all = [];
+    const { session, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: mode });
+    await tick();
+    const socket = FakeSocket.all[0];
+    socket.open();
+    speak(10);
+    speak(6, 0);
+    const done = session.finish();
+    await tick();
+    assert.equal(socket.commits(), 1, mode);
+    socket.emit({ type: 'input_audio_buffer.committed', item_id: 'x' });
+    socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'x', transcript: '好' });
+    assert.equal(await done, '好', mode);
+  }
+});
+
+test('提早轉寫 resend：作廢的句子 commit 還沒確認就作廢，回來的字也不算；斷線重連不會把它算回來', async () => {
+  const { session, speak } = startSpeech(async () => 'wss://transcribe', { earlyTranscribe: 'resend' });
+  await tick();
+  const first = FakeSocket.all[0];
+  first.open();
+  speak(10);
+  speak(4, 0);
+  speak(3); // 先送的那份還沒 committed 就又開口
+  speak(10, 0);
+  await tick(260);
+  assert.equal(first.commits(), 2);
+  first.drop();
+  await tick(20);
+  const second = FakeSocket.all[1];
+  second.open();
+  await tick();
+  // 重連後照原順序補送：作廢那句的 commit 也在裡面
+  assert.equal(second.commits(), 2);
+  second.emit({ type: 'input_audio_buffer.committed', item_id: 'dropped' });
+  second.emit({ type: 'input_audio_buffer.committed', item_id: 'kept' });
+  second.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'dropped', transcript: '我覺得' });
+  second.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'kept', transcript: '我覺得可以' });
+  assert.equal(await session.finish(), '我覺得可以');
 });

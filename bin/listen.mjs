@@ -9,36 +9,54 @@
 //      整段交給 AI（OpenAI／DeepSeek／Claude）整理再貼；選取了字又講指令就改寫選取的字。原稿留著可以換回。
 //   3. 自動找輸入框（autoFocus）：游標不在輸入框時，挑視窗裡最像要寫字的輸入框，對焦後寫進去。
 //
+// 速度（speed，cubelv_docs/計劃/2026-10-19_JarvisVoice語音加速規劃.md）：能先做的先做，猜錯就丟掉重來，結果跟原本一樣。
+//   - 開口時就先讀上下文（游標前後、畫面，截圖認字的 app 要 1 秒）、先把轉寫與 AI 的連線接好。
+//   - 停 0.4 秒就先把這句送去轉寫；到 0.85 秒確定講完就用這份，中間又開口就作廢。
+//   - 字一回來就開始 AI 整理（游標不在輸入框時同時挑好要寫的框）；整理好時已經停了 1.2 秒就直接貼，
+//     又開口就作廢、等整段講完一起整理。
+//   - 轉寫、AI 整理每次同時送兩份，誰先回用誰。
+//   - 游標旁的小框（app/ui.js）：講話中即時顯示聽到的字（本機 SenseVoice 預覽）、整理中、已貼上、指令、出錯。
+//   每次貼上 log 記一行「速度：講完到貼上 X 秒（字回來、整理好、貼上各花多少）」（只記 log，小框不顯示秒數）。
+//
 // 轉寫引擎看設定檔（bin/config.mjs）：local 本機 SenseVoice、openai 自己的 key（預設 gpt-transcribe 一般轉寫，
-// 也可以選 gpt-live-transcribe 即時）、parallelsandbox。設定檔改了會自動換。
+// 也可以選 gpt-live-transcribe 即時）、cubelv（用 CubeLV 登入，扣點數，bin/cubelv.mjs）、parallelsandbox。設定檔改了會自動換。
 // 狀態寫在 status.json 給狀態列讀；有 paused 檔就暫停；有 revert-request 檔就把上一段換回原稿。
-// stdout 每行一個 JSON（state、settings、hud、pasted、skipped）。
+// stdout 每行一個 JSON（state、settings、hud、bubble、pasted、skipped）。
 // 選項：--app 由選單列小程式帶起（log 寫進 listen.log，小程式不在了就結束）。
 // 測試選項：--file <音檔> 用音檔代替麥克風、讀完收尾結束；--dry-paste 只印不貼；--always 不看前景 app；
 // --pid <pid> 配 --file：只寫進這個 app（端到端測試的測試視窗），讀它的上下文、它到最前面才貼，不會貼到別的 app。
 
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createAx } from './ax.mjs';
-import { runCommand } from './commander.mjs';
+import { createMacAgentScreen } from './agent-screen.mjs';
 import { TurnSplitter, BATCH_BYTES, SAMPLE_RATE, findFfmpeg, parseFrontAppInfo } from './common.mjs';
-import { STATE_DIR, aiKey, appAllowed, configMtime, isLiveModel, loadConfig, styleFor } from './config.mjs';
-import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment } from './editor.mjs';
+import { STATE_DIR, aiAvailable, aiKey, appAllowed, configMtime, cubelvAccount, isLiveModel, loadConfig, styleFor } from './config.mjs';
+import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment, service } from './editor.mjs';
+import { DEFAULT_URLS } from '../core/providers.mjs';
 import { createBatchEngine } from './engines/batch.mjs';
-import { createLocalEngine } from './engines/local.mjs';
-import { createRealtimeEngine, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
+import { createLocalEngine, createPreviewer } from './engines/local.mjs';
+import { VOICEPRINT_MODEL, createVoiceprintFilter } from './voiceprint.mjs';
+import { createAudioDebug } from './audio-debug.mjs';
+import { createRealtimeEngine, cubelvConnector, openaiConnector, parallelSandboxConnector } from './engines/realtime.mjs';
 import { appendHistory } from './history.mjs';
-import { aiLog } from './ai-log.mjs';
-import { createDecider, describeElement, fieldQuestions, inFieldIntentQuestion, inFieldVerdict, intentQuestion, referenceQuestion } from './decide.mjs';
+import { createDecider, intentQuestion } from './decide.mjs';
 import { createLearner } from './learn.mjs';
 import { createVocabAuto } from './vocab-auto.mjs';
-import { rankTargets } from './targeter.mjs';
 import { finishText, isSpeech, withSpacing } from './text.mjs';
+// 一段話講完之後怎麼處理、幾句合成一段、小框的階段：都在核心（CubeLV、平行沙盒同一份），這裡只接 Mac 的接頭
+import { judgeInField, judgeUtterance, pickTarget, planOutput } from '../core/flow.mjs';
+import { createSegmenter, heardText, speechBubble } from '../core/segment.mjs';
+import { bubbleContent, stepText } from '../core/bubble.mjs';
+import { runAgent } from '../core/agent.mjs';
 
 const LOCK = join(STATE_DIR, 'listener.lock');
 const PAUSED = join(STATE_DIR, 'paused');
 const REVERT = join(STATE_DIR, 'revert-request');
+const VOICEPRINT_FILE = join(STATE_DIR, 'voiceprint.json');
+const VOICEPRINT_RESET = join(STATE_DIR, 'voiceprint-reset'); // 選單「重錄我的聲紋」
 const STATUS = join(STATE_DIR, 'status.json');
 const LAST = join(STATE_DIR, 'last.txt');
 const LOG = join(STATE_DIR, 'listen.log');
@@ -46,7 +64,7 @@ const POLL_MS = 500;
 const SEGMENT_CHECK_MS = 100;
 const HOLD_MS = 60_000; // 寫的時候前景是不收音的 app（例如開會），最多等一分鐘回來再寫
 const MAX_SEGMENT_CHARS = 1500; // 一直講不停太長就先整理這一段
-const NOT_IN_FIELD_SURE = 0.95; // 游標不在輸入框、AI 說是打字時，Jev 要這麼確定是指令才改當指令
+const MAC_PEAK_OVER_NOISE = 9; // 還沒開口時尖峰到底噪的 9 倍就算有人聲（10/19 實測：風扇聲裡沒人講話最大約 7.5 倍，正常講話 10 倍以上）
 
 const argv = process.argv.slice(2);
 const fileIndex = argv.indexOf('--file');
@@ -111,6 +129,32 @@ function hudShow(mode) {
   if (mode === hudMode) return;
   hudMode = mode;
   hudWrite(mode);
+  if (mode === 'hide') bubble('hide');
+  else if (mode.startsWith('error:')) bubble('error', { text: mode.slice(6) });
+}
+
+// 游標旁的小框（app/ui.js 畫）。有哪些階段、標題和內文寫什麼、停多久都在核心（core/bubble.mjs，CubeLV 的頂端 toast 同一份），
+// 這裡照系統語言算好交給 ui.js：{ state, title, body, tone, loud, busy, result, holdMs, at }。
+// at：游標（拿不到就是視窗）在螢幕上的位置 { x, y, w, h, kind: caret | window }（左上角原點），小框放在它下面；null 就放畫面下方中間
+const LANG = process.env.VOICE_DICTATION_LANG || process.env.LANG || '';
+const ZH = /^zh/i.test(LANG);
+let bubbleKey = '';
+let lastAnchor = null;
+const bubbleOn = () => config.speed.bubble && (appMode || !!process.env.VOICE_DICTATION_HUD);
+function bubble(state, { text = '', detail = '', speaker = '' } = {}) {
+  if (!bubbleOn()) return;
+  const key = `${state}|${text}|${detail}|${speaker}|${JSON.stringify(lastAnchor)}`;
+  if (key === bubbleKey) return;
+  bubbleKey = key;
+  const content = state === 'hide' ? null : bubbleContent({ state, text, detail, speaker }, ZH ? 'zh' : 'en');
+  emit({ type: 'bubble', state, ...(content ?? {}), at: lastAnchor });
+}
+
+// 讀到上下文就記下游標在哪，小框跟著放
+function noteAnchor(ctx) {
+  if (!ctx) return;
+  if (ctx.field?.editable && ctx.field.caret) lastAnchor = { ...ctx.field.caret, kind: 'caret' };
+  else if (ctx.frame) lastAnchor = { ...ctx.frame, kind: 'window' };
 }
 
 // ---- 設定與引擎 ----
@@ -119,8 +163,8 @@ let { config, error: configError } = loadConfig();
 let configStamp = configMtime(config);
 let engine = null;
 
-// AI 整理開著而且有 key 才走第二層
-const aiReady = () => config.ai.enabled && !!aiKey(config);
+// AI 整理開著而且有 key（或用 CubeLV 登入了）才走第二層
+const aiReady = () => config.ai.enabled && aiAvailable(config);
 const aiSettings = () => ({
   provider: config.ai.provider,
   model: config.ai.models[config.ai.provider] || '',
@@ -128,58 +172,98 @@ const aiSettings = () => ({
   timeoutMs: config.ai.timeoutMs,
   baseUrl: config.ai.baseUrls[config.ai.provider],
   extraBody: config.ai.extraBody,
+  cubelvUrl: config.cubelv.apiUrl,
 });
 
 function announceSettings() {
   const provider = config.ai.provider;
   const model = config.ai.models[provider] || DEFAULT_MODELS[provider];
   const deciderName = config.jev.apiKey ? 'Jev' : aiReady() ? PROVIDER_NAMES[provider] : '';
+  const account = cubelvAccount(config);
   emit({
     type: 'settings',
+    engine: config.engine,
     ai: { enabled: config.ai.enabled, provider, ready: aiReady() },
     autoFocus: config.autoFocus,
     commands: config.commands,
     decider: deciderName,
+    cubelv: { loggedIn: !!account, email: account?.email ?? '' },
+    voiceprint: { enabled: !!config.voiceprint.enabled, ready: !!voiceprint, enrolled: !!voiceprint?.enrolled() },
+    // 各家有沒有 key（哪裡設的都算）：選單選了沒有 key 的那家，直接開「設定自己的 key…」的對話框
+    keys: { openai: !!aiKey(config, 'openai'), deepseek: !!aiKey(config, 'deepseek'), claude: !!aiKey(config, 'claude'), jev: !!config.jev.apiKey },
   });
-  log(`AI 整理：${config.ai.enabled ? `${PROVIDER_NAMES[provider]}（${model}）${aiReady() ? '' : '，但沒有 key，先不整理'}` : '關'}；`
+  const missing = provider === 'cubelv' ? '，但還沒用 CubeLV 登入，先不整理' : '，但沒有 key，先不整理';
+  log(`AI 整理：${config.ai.enabled ? `${PROVIDER_NAMES[provider]}（${model}）${aiReady() ? '' : missing}` : '關'}；`
     + `自動找輸入框：${config.autoFocus ? '開' : '關'}；指令模式：${config.commands ? (aiReady() ? '開' : '開，但要先開 AI 整理') : '關'}；`
     + `第三層決策：${deciderName || '沒有（照規則）'}`);
   // 沒有 key 不算錯：只跑第一層，選單會寫「（沒有 key）」
 }
+
+let previewer = null;
+let previewModel = '';
 
 function startEngine() {
   engine?.close();
   const callbacks = {
     log,
     onError: (message) => setError(message),
-    onFinal: (raw) => {
+    // info：引擎交回 commit 時給的 meta（turn、voiceEndAt）加上 ms、early（整句引擎才有）
+    onFinal: (raw, info = {}) => {
+      finishedPreview(info.turn);
+      const heard = { ...info, heardAt: Date.now() };
       const text = finishText(raw, {
         output: config.output,
         replacements: config.replacements,
-        alreadyTraditional: config.engine === 'parallelsandbox',
+        alreadyTraditional: config.engine === 'parallelsandbox' || config.engine === 'cubelv',
       });
       if (!isSpeech(text)) {
         log(`轉寫結果：${text ? `「${text}」只有標點` : '（空的）'}，這句沒有字，不寫`);
+        showHeard();
+        segmenter.check();
         return;
       }
       log(`轉寫結果：${text}`);
-      if (aiReady()) addToSegment(text);
-      else enqueueOutput({ kind: 'text', text });
+      if (aiReady()) {
+        segmenter.add(text, heard);
+        showHeard();
+        segmenter.check(); // 字一回來就看能不能提早整理，不等下一輪
+      } else enqueueOutput({ kind: 'text', text, heard });
     },
   };
   if (config.engine === 'local') engine = createLocalEngine({ ...config.local, ...callbacks });
   else if (config.engine === 'openai' && isLiveModel(config.openai.model)) engine = createRealtimeEngine({ connector: openaiConnector(config.openai), ...callbacks });
-  else if (config.engine === 'openai') engine = createBatchEngine({ ...config.openai, ...callbacks });
+  else if (config.engine === 'openai') engine = createBatchEngine({ ...config.openai, hedge: config.speed.hedge, ...callbacks });
+  else if (config.engine === 'cubelv') engine = createRealtimeEngine({ connector: cubelvConnector({ ...config.cubelv, language: cubelvLanguage() }), ...callbacks });
   else engine = createRealtimeEngine({ connector: parallelSandboxConnector(config.parallelsandbox), ...callbacks });
+  // 講話中的即時預覽：雲端轉寫才需要（本機轉寫本來就快），有小框才看得到
+  const wantPreview = config.speed.preview && bubbleOn() && config.engine !== 'local';
+  if (!wantPreview) { previewer = null; previewModel = ''; }
+  else if (previewModel !== config.local.model) {
+    previewModel = config.local.model;
+    previewer = createPreviewer({ model: config.local.model, log });
+  }
   log(`轉寫引擎：${config.engine}${config.engine === 'openai' ? `（${config.openai.model}，詞彙 ${config.openai.keywords.length} 個）` : ''}`);
+  startVoiceprint();
   if (configError) setError(configError);
   announceSettings();
+}
+
+// CubeLV 轉寫的辨識語言：設定檔 openai.languages 有寫就照它，沒寫看介面語言（中文是 zh-Hant＝繁中夾英文），其他讓模型自己判斷
+function cubelvLanguage() {
+  const langs = config.openai.languages.map((l) => String(l).toLowerCase());
+  if (langs.some((l) => l.startsWith('zh'))) return 'zh-Hant';
+  if (langs.length === 1 && langs[0].startsWith('ja')) return 'ja';
+  if (langs.length === 1 && langs[0].startsWith('en')) return 'en';
+  return !langs.length && /^zh/i.test(process.env.VOICE_DICTATION_LANG || process.env.LANG || '') ? 'zh-Hant' : '';
 }
 
 function reloadConfigIfChanged() {
   const stamp = configMtime(config);
   if (stamp === configStamp) return;
   if (engine?.busy()) return; // 有句子還在轉寫，等轉完再換（換引擎會丟掉轉到一半的）
+  // 正在講、或有聲音已經交給引擎還沒切句：等這句講完再換。換引擎會把已經交出去的聲音丟掉
+  // （10/25 詞彙表自動加詞在講話中途換引擎，那句講了 1.9 秒只轉到 1.4 秒）
+  if (detector.speaking || detector.starting || pendingBytes) return;
   configStamp = stamp;
   ({ config, error: configError } = loadConfig());
   configStamp = configMtime(config);
@@ -237,6 +321,8 @@ let sentSamples = 0;
 let lastSpeechAt = 0;
 let lastVoiceAt = 0; // 最後一次真的聽到人聲（算一段講完了沒）
 let turnPeak = 0; // 這一句的最大音量（記 log 用）
+// 自己 debug 用：存每一句與麥克風的音檔（設定 debug.saveAudio，預設關；bin/audio-debug.mjs）
+const audioDebug = createAudioDebug({ enabled: () => !!config.debug?.saveAudio, log });
 let batchRms = 0; // 最近一批（0.1 秒）的音量，說話中送給選單列畫聲波
 // 音量換成 0–1 給選單列：-50 dB 以下是 0、-10 dB 以上是 1
 const levelOf = (rms) => Math.min(1, Math.max(0, (20 * Math.log10(Math.max(rms, 1e-6)) + 50) / 40));
@@ -249,9 +335,10 @@ const stageAudio = () => {
   pendingBytes = 0;
 };
 
-const queueTurn = (turn) => {
+// meta 跟著這句走到 onFinal：turn（第幾句，對即時預覽用）、voiceEndAt（最後一次聽到人聲，算「講完到貼上」）
+const queueTurn = () => {
   stageAudio();
-  engine.commit(turn);
+  engine.commit({ turn: currentTurn, voiceEndAt: lastVoiceAt });
 };
 const takeAudio = (audio) => {
   for (const b of audio) { pendingChunks.push(b); pendingBytes += b.length; }
@@ -262,6 +349,10 @@ const takeAudio = (audio) => {
 let levelPeak = 0;
 let reopenCapture = false;
 let levelSince = Date.now();
+// 診斷：這 15 秒麥克風實際交來幾秒聲音（少了＝聲音在進到這裡之前就掉了）、程式最久卡住多久（卡住時 ffmpeg 交不出聲音會丟掉）
+let receivedBytes = 0;
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
 function trackLevel(samples) {
   let peak = 0;
   let sum = 0;
@@ -273,7 +364,19 @@ function trackLevel(samples) {
   if (levelPeak === 0) notes.push('完全沒聲音，多半是剛給麥克風權限前就開了，重開麥克風');
   if (levelPeak >= 0.99) notes.push('有爆音（音量到頂），轉寫可能會錯');
   if (detector.shortBlips) notes.push(`${detector.shortBlips} 次聲音不到 0.18 秒，當雜音沒算成一句`);
-  log(`麥克風 15 秒內最大音量 ${levelPeak.toFixed(3)}（人聲門檻：尖峰 0.055 起，跟著底噪往上調）${notes.length ? `：${notes.join('；')}` : ''}`);
+  const gotSec = receivedBytes / (SAMPLE_RATE * 2);
+  const wallSec = (Date.now() - levelSince) / 1000;
+  if (wallSec - gotSec > 0.5) notes.push(`這 ${wallSec.toFixed(1)} 秒只收到 ${gotSec.toFixed(1)} 秒聲音`);
+  const stallMs = loopDelay.max / 1e6;
+  if (stallMs > 300) notes.push(`程式最久卡住 ${Math.round(stallMs)} ms`);
+  receivedBytes = 0;
+  loopDelay.reset();
+  // 門檻跟著底噪走：記下現在的底噪、開口門檻，和沒算成人聲的聲音最大到多少（講話沒被聽到時看差多少）
+  const th = detector.thresholds();
+  const gate = `底噪 ${th.noise.toFixed(4)}、開口門檻 RMS ${th.level.toFixed(3)} 或尖峰 ${th.peak.toFixed(3)}；沒算成人聲的最大 RMS ${detector.missLevel.toFixed(3)}、尖峰 ${detector.missPeak.toFixed(3)}`;
+  log(`麥克風 15 秒內最大音量 ${levelPeak.toFixed(3)}（${gate}）${notes.length ? `：${notes.join('；')}` : ''}`);
+  detector.missLevel = 0;
+  detector.missPeak = 0;
   // 權限詢問還沒按允許時開的麥克風，允許之後也一直收到 0：重開一次就好
   if (levelPeak === 0) reopenCapture = true;
   detector.shortBlips = 0;
@@ -283,23 +386,154 @@ function trackLevel(samples) {
 }
 
 function takeBatch(chunk) {
+  audioDebug.mic(chunk);
   const samples = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
   const peak = trackLevel(samples);
   const startMs = sentSamples / 24;
   sentSamples += samples.length;
   const wasSpeaking = detector.speaking;
-  const { audio, turn } = splitter.push(samples, startMs);
+  const { audio, turn, tentative, resumed } = splitter.push(samples, startMs);
   takeAudio(audio);
   if (detector.speaking) lastSpeechAt = Date.now();
   if ((detector.speaking || turn) && detector.lastVoiced) lastVoiceAt = Date.now();
   if (detector.speaking || turn) turnPeak = Math.max(turnPeak, peak);
+  if (!wasSpeaking && detector.speaking) speechStarted();
+  if (wasSpeaking || detector.speaking) for (const b of audio) { turnAudio.push(b); turnAudioBytes += b.length; }
   if (detector.speaking !== wasSpeaking && state === 'listening') hudShow(detector.speaking ? 'hearing' : 'listening');
-  if (detector.speaking && state === 'listening') hudWrite(`level:${levelOf(batchRms).toFixed(2)}`);
-  if (turn) {
-    log(`切出一句 ${((turn.endMs - turn.startMs) / 1000).toFixed(1)} 秒（最大音量 ${turnPeak.toFixed(3)}${turnPeak >= 0.99 ? '，爆音' : ''}），送去轉寫`);
-    turnPeak = 0;
-    queueTurn(turn);
+  if (detector.speaking && state === 'listening') {
+    hudWrite(`level:${levelOf(batchRms).toFixed(2)}`);
+    warmUp();
+    schedulePreview();
   }
+  // 停了 0.4 秒：先比聲紋（不像使用者就不送），再把到這裡的聲音送去轉寫；又開口就作廢
+  if (tentative && engine.speculate) {
+    turnVerdict = voiceprint ? voiceprint.check(Buffer.concat(turnAudio, turnAudioBytes), (detector.lastVoiceEnd - detector.currentStartMs) / 1000, { dryRun: true }) : null;
+    if (!turnVerdict || turnVerdict.pass) { stageAudio(); engine.speculate(); }
+  }
+  if (resumed) {
+    turnVerdict = null;
+    if (engine.discard?.()) log('停 0.4 秒先送的轉寫作廢：又開口了');
+  }
+  if (turn) {
+    const sec = (turn.endMs - turn.startMs) / 1000;
+    // 停 0.4 秒時已經算過這句的聲紋（之後沒再開口，聲音一樣）：直接記，不再算一次
+    const verdict = judgeTurn(sec, turnVerdict?.v);
+    turnVerdict = null;
+    const loud = `最大音量 ${turnPeak.toFixed(3)}${turnPeak >= 0.99 ? '，爆音' : ''}`;
+    turnPeak = 0;
+    const audioFile = audioDebug.turn(turnAudio, { verdict: verdict.verdict ?? (verdict.pass ? 'pass' : 'other'), sec });
+    if (verdict.pass) {
+      log(`切出一句 ${sec.toFixed(1)} 秒（${loud}），送去轉寫${audioFile ? `（音檔 ${audioFile}）` : ''}`);
+      queueTurn();
+    } else {
+      stageAudio();
+      engine.skip?.();
+      // 小框寫「別人在講話，這句不轉寫」，附上本機預覽聽到的字（看得到擋了什麼）
+      const heard = previews.get(currentTurn) ?? '';
+      if (audioFile) log(`擋掉的這句：音檔 ${audioFile}，本機預覽聽到「${heard}」`);
+      finishedPreview(currentTurn);
+      showHeard(heard);
+    }
+    turnAudio = [];
+    turnAudioBytes = 0;
+  }
+}
+
+// ---- 只聽使用者的聲音（聲紋，bin/voiceprint.mjs、core/voiceprint.mjs）----
+
+let voiceprint = null;
+let voiceprintKey = '';
+let turnVerdict = null; // 這句在停 0.4 秒時先比的聲紋（只看不記；切句時用同一個聲紋記，不再算一次）
+
+function startVoiceprint() {
+  const { enabled, threshold, minSeconds, shortThreshold } = config.voiceprint;
+  const key = enabled ? `${threshold}:${minSeconds}:${shortThreshold}` : '';
+  if (key === voiceprintKey) return;
+  voiceprintKey = key;
+  voiceprint = enabled ? createVoiceprintFilter({
+    model: join(STATE_DIR, 'models', 'speaker', VOICEPRINT_MODEL), file: VOICEPRINT_FILE, threshold, minSeconds, shortThreshold, log,
+  }) : null;
+  lastSpeaker = '';
+  if (voiceprint) log(voiceprint.enrolled() ? '只聽你的聲音：開（聲紋已錄好）' : '只聽你的聲音：開，從你講的話在背景學你的聲音（學好之前照常轉寫）');
+}
+
+// 小框的小標籤寫是誰講的：最後一句比過聲紋的結果（mine 你說的、short 短句；聲紋還在背景學的時候不標）
+let lastSpeaker = '';
+
+// 這句是不是使用者講的：還在錄樣本、太短、像使用者都放行；不像就不轉寫。v：停 0.4 秒時算好的聲紋
+function judgeTurn(sec, v = null) {
+  if (!voiceprint) return { pass: true };
+  const r = v ? voiceprint.commit(v, sec) : voiceprint.check(Buffer.concat(turnAudio, turnAudioBytes), sec);
+  if (r.verdict === 'enrolling') log('聲紋還在背景學：這句當樣本，照常轉寫');
+  else if (r.verdict === 'enrolled') {
+    log(`聲紋樣本錄好了（留下 ${r.kept} 句）：之後不像你的聲音不轉寫`);
+    announceSettings();
+  } else if (r.verdict === 'other') log(`聲紋不像你（相似度 ${r.score.toFixed(2)}，${sec.toFixed(1)} 秒，${r.ms} ms）：這句不轉寫`);
+  else if (r.score !== null) log(`聲紋：${r.verdict === 'short' ? '短句，是你' : '是你'}（相似度 ${r.score.toFixed(2)}，${r.ms} ms）`);
+  if (r.pass) lastSpeaker = r.verdict === 'enrolled' ? 'mine' : r.verdict === 'enrolling' ? '' : r.verdict;
+  return r;
+}
+
+// 開口了：先讀上下文、接好連線；講到一半的提早整理作廢（等整段講完一起整理）
+function speechStarted() {
+  currentTurn += 1;
+  turnAudio = [];
+  turnAudioBytes = 0;
+  previewedBytes = 0;
+  segmenter.drop('又開口了');
+  turnVerdict = null;
+  void prefetchContext();
+  warmUp();
+  showHeard();
+}
+
+// ---- 講話中的即時預覽（游標旁的小框）：本機 SenseVoice 每多 0.5 秒聲音認一次目前這句，只顯示、不貼 ----
+
+const PREVIEW_STEP_BYTES = 24000; // 0.5 秒（24 kHz、16-bit）
+let currentTurn = 0; // 第幾句（開口一次加一）
+let turnAudio = []; // 這句到目前的聲音
+let turnAudioBytes = 0;
+let previewedBytes = 0;
+let previewBusy = false;
+let finalTurn = 0; // 雲端轉寫已經回來的最後一句；比它舊的預覽不再顯示
+const previews = new Map(); // 第幾句 → 預覽的字（雲端的字回來就拿掉）
+
+function schedulePreview() {
+  if (!previewer || previewBusy || turnAudioBytes - previewedBytes < PREVIEW_STEP_BYTES) return;
+  previewBusy = true;
+  previewedBytes = turnAudioBytes;
+  const turnNo = currentTurn;
+  previewer.recognize(Buffer.concat(turnAudio, turnAudioBytes)).then((raw) => {
+    const text = finishText(raw, { output: config.output, replacements: config.replacements });
+    if (turnNo <= finalTurn || !isSpeech(text)) return;
+    previews.set(turnNo, text);
+    showHeard();
+  }, (err) => log(`即時預覽失敗：${err.message}`)).finally(() => { previewBusy = false; });
+}
+
+// 雲端的字回來了：這句（和更早的）預覽拿掉，換成雲端的字
+function finishedPreview(turnNo) {
+  const upTo = turnNo ?? (detector.speaking ? currentTurn - 1 : currentTurn);
+  finalTurn = Math.max(finalTurn, upTo);
+  for (const k of previews.keys()) if (k <= upTo) previews.delete(k);
+}
+
+// 小框顯示目前聽到的：寫什麼由核心 speechBubble 決定（CubeLV 同一個）。Mac 不開 confirmedOnly：一開口就跟著出字，
+// 講完比過聲紋才標「你說的」，別人講的說「別人在講話」。ignored：剛切完的這句聲紋不像你時，本機預覽聽到的字
+function showHeard(ignored) {
+  if (state !== 'listening') return;
+  const parts = segmenter.parts();
+  const shown = speechBubble({
+    heard: heardText(parts),
+    live: heardText(parts, [...previews.values()]),
+    working: segmenter.working() || '',
+    speaking: detector.speaking,
+    // 聲紋還在背景學的時候不標是誰講的（core/voiceprint.mjs：沒有建立聲紋這一步）
+    speaker: voiceprint?.enrolled() ? lastSpeaker : '',
+    ignored,
+  });
+  if (shown) bubble(shown.state, { text: shown.text, speaker: shown.speaker });
+  else if (!outputQueue.length && !outputBusy) bubble('hide');
 }
 
 // 停麥克風時把講到一半的那句送出去
@@ -310,33 +544,87 @@ function finishTurn() {
   if (turn) {
     log(`麥克風停了，講到一半的那句（${((turn.endMs - turn.startMs) / 1000).toFixed(1)} 秒）送去轉寫`);
     takeAudio(audio);
-    queueTurn(turn);
+    queueTurn();
   }
+  turnAudio = [];
+  turnAudioBytes = 0;
   turnPeak = 0;
   pendingChunks = [];
   pendingBytes = 0;
 }
 
 let captureEnded = null;
+let captureName = 'ffmpeg'; // 現在用哪個收音（原生收音／ffmpeg），記 log 用
+// 麥克風卡住：ffmpeg 還活著但不再送聲音（電腦睡醒、麥克風裝置換了之後會這樣，10/19 卡了 4 小時才發現）。
+// 開著麥克風卻 3 秒都沒有聲音進來（安靜也會一直送 0），就重開
+const CAPTURE_STALL_MS = 3000;
+let lastAudioAt = 0;
+// 收音程式的警告：同一句一分鐘最多記一次，附上這段時間出現幾次
+const ffmpegNotes = new Map(); // 去掉數字的那句 → { at, count }
+function logFfmpeg(line, name) {
+  const key = line.replace(/[0-9.]+/g, '#').slice(0, 120);
+  const note = ffmpegNotes.get(key) ?? { at: 0, count: 0 };
+  note.count += 1;
+  if (Date.now() - note.at >= 60_000) {
+    log(`${name}：${line.trim().slice(0, 200)}${note.count > 1 ? `（一分鐘內 ${note.count} 次）` : ''}`);
+    note.at = Date.now();
+    note.count = 0;
+  }
+  ffmpegNotes.set(key, note);
+}
+
+// 收麥克風用原生小幫手（bin/mic-capture.swift，AVAudioEngine）：ffmpeg 的 avfoundation 會掉約一成聲音
+// （10/25 實測 20 秒只交出 17.9 秒，小幫手 20.0 秒），講話中間少一截、句尾變「……」。
+// 第一次用 swiftc 編到 <狀態資料夾>/bin/mic-capture（原始檔改了會重編）；沒有 swiftc、編不過或開不起來就照舊用 ffmpeg。
+const MIC_HELPER_SRC = join(import.meta.dirname, 'mic-capture.swift');
+const MIC_HELPER = join(STATE_DIR, 'bin', 'mic-capture');
+let micHelperBroken = false; // 這次執行開不起來過：之後都用 ffmpeg
+function micHelper() {
+  if (micHelperBroken || process.env.VOICE_DICTATION_FFMPEG_CAPTURE) return null;
+  try {
+    if (existsSync(MIC_HELPER) && statSync(MIC_HELPER).mtimeMs >= statSync(MIC_HELPER_SRC).mtimeMs) return MIC_HELPER;
+    log('編譯原生收音小幫手（第一次約 10 秒）');
+    mkdirSync(join(STATE_DIR, 'bin'), { recursive: true });
+    const tmp = `${MIC_HELPER}.${process.pid}`;
+    execFileSync('/usr/bin/swiftc', ['-O', MIC_HELPER_SRC, '-o', tmp], { stdio: 'ignore', timeout: 180_000 });
+    renameSync(tmp, MIC_HELPER);
+    return MIC_HELPER;
+  } catch (err) {
+    log(`原生收音小幫手編不起來，改用 ffmpeg：${err.message.split('\n')[0]}`);
+    micHelperBroken = true;
+    return null;
+  }
+}
+
 function startCapture() {
-  log('開麥克風');
+  const helper = inputFile ? null : micHelper();
+  const name = helper ? '原生收音' : 'ffmpeg';
+  log(`開麥克風（${name}）`);
   levelPeak = 0;
   levelSince = Date.now();
-  splitter = new TurnSplitter();
+  // 尖峰門檻用底噪的 9 倍（core/turns.mjs 的 peakOverNoise）：風扇聲裡正常講話才聽得到
+  splitter = new TurnSplitter({ tentativeMs: config.engine === 'openai' ? config.speed.earlyTranscribeMs : 0, peakOverNoise: MAC_PEAK_OVER_NOISE });
   detector = splitter.detector;
   carry = Buffer.alloc(0);
   const input = inputFile ? ['-re', '-i', inputFile] : ['-f', 'avfoundation', '-i', ':default'];
-  const child = spawn(findFfmpeg(), [
-    '-hide_banner', '-loglevel', 'error', '-nostdin', ...input,
+  const child = helper ? spawn(helper, [], { stdio: ['ignore', 'pipe', 'pipe'] }) : spawn(findFfmpeg(), [
+    '-hide_banner', '-loglevel', inputFile ? 'error' : 'warning', '-nostdin', ...input,
     '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', 'pipe:1',
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  captureName = name;
   ffmpeg = child;
   let errText = '';
   let gotAudio = false;
-  child.stderr.on('data', (d) => { errText = (errText + d.toString()).slice(-400); });
+  child.stderr.on('data', (d) => {
+    errText = (errText + d.toString()).slice(-400);
+    for (const line of d.toString().split('\n').filter(Boolean)) logFfmpeg(line, name);
+  });
+  lastAudioAt = Date.now() + 5000; // 剛開的麥克風要一兩秒才有聲音：多等 5 秒
   child.stdout.on('data', (data) => {
     if (ffmpeg !== child) return;
     gotAudio = true;
+    lastAudioAt = Date.now();
+    receivedBytes += data.length;
     carry = carry.length ? Buffer.concat([carry, data]) : data;
     while (carry.length >= BATCH_BYTES) {
       takeBatch(Buffer.from(carry.subarray(0, BATCH_BYTES)));
@@ -349,13 +637,27 @@ function startCapture() {
     ffmpeg = null;
     finishTurn();
     if (inputFile) return;
-    const detail = errText.trim().split('\n').at(-1) || `ffmpeg 結束（${code}）`;
+    const detail = errText.trim().split('\n').at(-1) || `${name}結束（${code}）`;
+    // 小幫手：麥克風裝置換了會自己結束（code 0），馬上重開；一點聲音都沒交出來就是開不起來，改用 ffmpeg
+    if (helper && gotAudio && code === 0) { captureRetryAt = Date.now() + 300; return; }
+    if (helper && !gotAudio) {
+      log(`原生收音開不起來，改用 ffmpeg：${detail}`);
+      micHelperBroken = true;
+      captureRetryAt = Date.now() + 300;
+      return;
+    }
     setError(gotAudio ? `麥克風中斷：${detail}` : `麥克風開不起來：${detail}`);
     captureRetryAt = Date.now() + 10_000;
   });
   child.on('error', (err) => {
     if (ffmpeg !== child) return;
     ffmpeg = null;
+    if (helper) {
+      log(`原生收音開不起來，改用 ffmpeg：${err.message}`);
+      micHelperBroken = true;
+      captureRetryAt = Date.now() + 300;
+      return;
+    }
     setError(`ffmpeg 開不起來：${err.message}（brew install ffmpeg）`);
     captureRetryAt = Date.now() + 30_000;
   });
@@ -366,38 +668,31 @@ function stopCapture() {
   ffmpeg = null;
   try { child?.kill('SIGKILL'); } catch { /* 已經結束 */ }
   finishTurn();
+  audioDebug.flush();
 }
 
-// ---- 第二層：一段話（幾句）講完才整理 ----
+// ---- 第二層：一段話（幾句）講完才整理（規則在核心 core/segment.mjs，CubeLV 的一直聽同一份）----
+// 每句都轉完、而且停了 ai.segmentPauseMs 才算一段講完；提早整理（speed.pasteAfterMs）：每句都轉完、沒在講話就先整理這段，
+// 整理好時已經停了 pasteAfterMs 就算講完、直接貼；又開口或又多一句就作廢，等整段講完一起整理（跟原本一樣）
 
-let segment = null; // { parts: [], chars }
-let segmentForce = false;
-
-function addToSegment(text) {
-  segment ??= { parts: [], chars: 0 };
-  segment.parts.push(text);
-  segment.chars += text.length;
-}
+const segmenter = createSegmenter({
+  pauseMs: () => config.ai.segmentPauseMs,
+  pasteAfterMs: () => config.speed.pasteAfterMs,
+  maxChars: MAX_SEGMENT_CHARS,
+  state: () => ({ speaking: detector.speaking, starting: detector.starting, busy: !!engine?.busy() || pendingBytes > 0, lastVoiceAt }),
+  prepare: (raw, signal) => frontNow().then((front) => prepare(raw, front, signal)),
+  onWorking: (raw) => bubble('working', { text: raw }),
+  onSegment: ({ raw, heard, prepared, earlyPolish }) => enqueueOutput({ kind: 'segment', raw, heard, prepared, earlyPolish }),
+  log,
+});
 
 // 辨識中（選單列的循環箭頭在轉）：有句子在轉寫、一段還在等整理、或整理好還沒寫進去
 let working = false;
 function updateWorking() {
-  const now = !!(engine?.busy() || segment || outputQueue.length || outputBusy);
+  const now = !!(engine?.busy() || segmenter.has() || outputQueue.length || outputBusy);
   if (now === working) return;
   working = now;
   hudWrite(now ? 'working' : 'idle');
-}
-
-// 每句都已經轉完、而且停了夠久，才算一段講完
-function checkSegment() {
-  if (!segment) return;
-  if (engine.busy() || pendingBytes) return;
-  const long = segment.chars >= MAX_SEGMENT_CHARS;
-  if (!segmentForce && !long && (detector.speaking || Date.now() - lastVoiceAt < config.ai.segmentPauseMs)) return;
-  const raw = segment.parts.map(withSpacing).join('').trim();
-  segment = null;
-  segmentForce = false;
-  enqueueOutput({ kind: 'segment', raw });
 }
 
 // ---- 寫進輸入框 ----
@@ -441,33 +736,18 @@ async function axCall(op, args, timeoutMs) {
 const decider = createDecider(() => ({ jevKey: config.jev.apiKey, jevModel: config.jev.model, ai: aiReady() ? aiSettings() : null }));
 const commandsOn = () => config.commands && aiReady();
 
-// 第三層（輸入）：游標不在輸入框，挑視窗裡要寫的輸入框對焦。上次寫的那個或只有一個就直接用，
-// 其他交給決策器（Jev 或 AI）挑，沒有決策器就照規則排第一的
-async function focusBestField(pid, transcript, ctx) {
+// 第三層（輸入）：游標不在輸入框，挑視窗裡要寫的輸入框（規則在核心 core/flow.mjs 的 pickTarget：上次寫的那個或只有一個就直接用，
+// 其他交給決策器挑，沒有決策器就照規則排第一的）。只挑不對焦（跟 AI 整理同時做），確定要打字才 focusField
+async function pickField(pid, transcript, ctx) {
   const found = await axCall('targets', { pid });
-  if (!found) return false;
+  if (!found) return null;
   const remembered = rememberedTargets.get(`${pid}:${found.window?.title ?? ''}`);
-  let { choice, reason, sure, list } = rankTargets({ candidates: found.candidates, window: found.window, remembered });
-  if (!sure && decider.available()) {
-    try {
-      const started = Date.now();
-      const a = await decider.decide({ transcript, app: ctx?.app ?? '', window: found.window?.title ?? '' }, fieldQuestions(list, found.window));
-      const pick = list[Number(String(a.target?.choice ?? '').slice(1))];
-      if (pick) {
-        choice = pick;
-        reason = `${decider.engine()} 挑的，信心 ${(a.target.confidence ?? 0).toFixed(2)}，${Date.now() - started} ms`;
-      }
-    } catch (err) {
-      log(`決策器失敗，改照規則挑：${err.message}`);
-    }
-  }
-  if (!choice) {
-    log(`游標不在輸入框，${reason}`);
-    return false;
-  }
+  return pickTarget({ candidates: found.candidates, window: found.window, remembered, transcript, decider, context: { app: ctx?.app ?? '' }, log });
+}
+
+async function focusField({ choice, reason }) {
   await axCall('focus', { handle: choice.handle });
   log(`游標不在輸入框，自動對焦到「${choice.label || choice.role}」（${reason}）`);
-  return true;
 }
 
 // 截圖認字要「螢幕錄影」權限：沒有就提醒一次（小幫手第一次會跳系統詢問）
@@ -479,42 +759,117 @@ function noteCapturePermission(source) {
   setError('讀不到畫面的 app（例如 LINE）要截圖認字：系統設定 → 隱私權與安全性 → 螢幕錄影，打開「JarvisVoice」');
 }
 
-// AI 整理開著時連畫面上看得到的字一起讀（給 AI 判斷在討論什麼、專有名詞怎麼寫）；讀不到畫面的 app 會用截圖認字
-async function readContext(front) {
+// AI 整理開著時連畫面上看得到的字一起讀（給 AI 判斷在討論什麼、專有名詞怎麼寫）；讀不到畫面的 app 會用截圖認字。
+// screen: false 只讀游標與輸入框（對焦後重讀、開口時先拿游標位置給小框）
+async function readContext(front, { screen = true } = {}) {
   if (dryPaste || !front.pid) return null;
-  const ctx = await axCall('context', { pid: front.pid, chars: config.ai.contextChars, screen: aiReady() ? config.ai.screenChars : 0 }, 15000);
+  const ctx = await axCall('context', { pid: front.pid, chars: config.ai.contextChars, screen: screen && aiReady() ? config.ai.screenChars : 0 }, 15000);
   noteCapturePermission(ctx?.screenSource);
+  noteAnchor(ctx);
   return ctx;
 }
 
-// 游標在輸入框時問 Jev：看畫面上有什麼，判斷這句是不是要操作畫面
-async function judgeInField(raw, front, ctx) {
-  // 讀不到畫面的 app（例如 LINE）會用截圖認出來的字補上
-  const snap = await axCall('elements', { pid: front.pid, limit: 150, ocr: 'auto' }, 15000);
-  noteCapturePermission(snap?.source);
-  const items = (snap?.elements ?? []).filter((e) => !['AXTextField', 'AXTextArea', 'AXComboBox', 'AXSearchField'].includes(e.role)).slice(0, 120);
-  const field = [ctx.field.label, ctx.field.role].filter(Boolean).join('，');
-  const answers = await decider.decide({
-    transcript: raw, app: ctx.app ?? '', window: ctx.window ?? '', field: `${field}（游標在這）`,
-    screen: items.map((e) => describeElement(e, snap?.window)),
-  }, { intent: inFieldIntentQuestion(), target: referenceQuestion(items, snap?.window) });
-  return inFieldVerdict(answers, items);
+// 最前面的 app：tick 每 0.5 秒查一次，夠新就直接用（貼上時小幫手會再確認是不是在最前面）
+let lastFront = null;
+async function frontNow() {
+  if (targetPid) return { bundle: '', pid: targetPid };
+  if (always) return { bundle: '', pid: 0 };
+  if (lastFront && Date.now() - lastFront.at < 700) return lastFront;
+  return frontApp();
 }
 
-// AI 整理。是不是指令：
-//   游標不在輸入框：照 AI 整理的判斷（實測只用 AI 40/40；再要 Jev 也同意，反而會擋掉「傳訊息給某人」）。
-//     只有一個例外是單向的：AI 說是打字、Jev 很確定是要操作畫面（≥ 0.95）時改當指令——同一句「開啟我的 email」
-//     AI 有時判成打字，游標不在輸入框就會被貼進這個視窗上次寫的地方（10/19 貼進 Threads 的發文框）；
-//   游標在輸入框：開了指令模式而且有 Jev，同時問 Jev（不多花時間），Jev 看了畫面很確定是要操作畫面才算
-//   （這時再請 AI 拆出目標和要搜尋的字）；AI 說是指令但 Jev 說不是就當成打字，傳訊息給某人除外。
-//   沒有 Jev 就照 AI 整理的判斷（只有開頭講「指令」或傳訊息才算）。
+// 開口時就先讀上下文（截圖認字的 app 要 1 秒），講完直接用；先讀一次不含畫面的（很快，小框才知道游標在哪）。
+// 貼上後游標前後的字變了就丟掉，下次開口再讀
+let ctxCache = null; // { pid, at, done, promise }
+async function prefetchContext() {
+  if (dryPaste || (!aiReady() && !bubbleOn())) return;
+  const front = await frontNow();
+  if (!front.pid) return;
+  if (ctxCache?.pid === front.pid && !ctxCache.done && Date.now() - ctxCache.at < 15_000) return; // 上一次還在讀
+  const entry = { pid: front.pid, at: Date.now(), done: false };
+  ctxCache = entry;
+  const quick = aiReady() && config.ai.screenChars && bubbleOn() ? readContext(front, { screen: false }) : null;
+  entry.promise = (async () => {
+    await quick;
+    return readContext(front);
+  })().finally(() => { entry.done = true; });
+}
+
+function contextFor(front) {
+  if (ctxCache?.pid === front.pid && Date.now() - ctxCache.at < 60_000) return ctxCache.promise;
+  return readContext(front);
+}
+
+// 講話中先把要用到的連線接好（每個網址 3 秒最多一次，雙發要幾條就接幾條）：HEAD 一下，連線留在連線池，
+// 講完的請求不用重新握手（實測冷的多 0.05～0.12 秒）。只在選單列小程式裡做（測試的假伺服器不用）
+const warmedAt = new Map();
+function warmUp() {
+  if (!config.speed.warm || !(appMode || process.env.VOICE_DICTATION_WARM)) return;
+  const urls = [];
+  if (config.engine === 'openai' && !isLiveModel(config.openai.model)) urls.push(process.env.VOICE_DICTATION_OPENAI_HTTP_URL || 'https://api.openai.com/v1/audio/transcriptions');
+  if (aiReady() && config.ai.provider !== 'cubelv') urls.push(DEFAULT_URLS[config.ai.provider]);
+  // CubeLV：轉寫與 AI 整理都在同一個網域，暖一條就好（/health 由 router 直接回，不碰後端）
+  if (config.engine === 'cubelv' || (aiReady() && config.ai.provider === 'cubelv')) urls.push(`${config.cubelv.apiUrl}/health`);
+  if (commandsOn() && config.jev.apiKey) urls.push(DEFAULT_URLS.jev);
+  const now = Date.now();
+  for (const url of urls) {
+    if (now - (warmedAt.get(url) ?? 0) < 3000) continue;
+    warmedAt.set(url, now);
+    for (let i = 0; i < Math.max(1, config.speed.hedge); i += 1) {
+      fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(3000) }).then((r) => r.arrayBuffer()).catch(() => {});
+    }
+  }
+}
+
+// 整理前的準備（可以提早做，不貼、不動畫面）：上下文（開口時就先讀了）、AI 整理，游標不在輸入框時同時挑好要寫的框。
+// signal：提早整理作廢時取消 AI 請求
+async function prepare(raw, front, signal) {
+  const ctx = await contextFor(front);
+  const inField = !ctx?.field.known || ctx.field.editable;
+  const out = { front, ctx, inField, result: null, pick: null, aiDoneAt: 0 };
+  // 不在輸入框、也沒開自動找或指令：不用送 AI
+  if (!inField && !config.autoFocus && !commandsOn()) return out;
+  if (!inField && config.autoFocus) {
+    out.pick = pickField(front.pid, raw, ctx).catch((err) => { log(`挑輸入框失敗：${err.message}`); return null; });
+  }
+  out.result = await aiEdit(raw, front, ctx, signal);
+  out.aiDoneAt = Date.now();
+  return out;
+}
+
+// 講完到貼上的時間：講完（最後一次聽到人聲）→ 字回來 → 整理好 → 貼上
+function speedNote(item, prep, pasteStartAt, pastedAt) {
+  const end = item.heard?.voiceEndAt;
+  if (!end) return null;
+  const s = (ms) => (ms / 1000).toFixed(2);
+  const parts = {
+    total: pastedAt - end,
+    heard: item.heard.heardAt - end,
+    transcribeMs: item.heard.ms ?? null,
+    earlyTranscribe: !!item.heard.early,
+    aiDone: prep?.aiDoneAt ? prep.aiDoneAt - end : null,
+    aiMs: prep?.result?.ms ?? null,
+    earlyPolish: !!item.earlyPolish,
+    paste: pastedAt - pasteStartAt,
+  };
+  const bits = [`字回來 ${s(parts.heard)}${parts.earlyTranscribe ? '（停 0.4 秒就先送）' : ''}`];
+  if (parts.aiDone !== null) bits.push(`整理好 ${s(parts.aiDone)}（AI ${s(parts.aiMs ?? 0)}${parts.earlyPolish ? '，字一回來就整理' : ''}）`);
+  bits.push(`貼上 ${s(parts.paste)}`);
+  return { parts, line: `速度：講完到貼上 ${s(parts.total)} 秒（${bits.join('、')}）` };
+}
+
+// AI 整理＋是不是指令：規則在核心（core/flow.mjs 的 judgeUtterance，CubeLV 同一份），這裡接 Mac 的 AI、Jev 與輔助使用。
+// 有 Jev 才另外問決策器：游標在輸入框時看畫面判斷是不是要操作（judgeInField），不在輸入框時問是指令的機率；沒有 Jev 就照 AI 整理的判斷。
 // 對照：cubelv_docs/分析/2026-10-18_JarvisVoice_Jev必要性.md
-async function aiEdit(raw, front, ctx) {
+async function aiEdit(raw, front, ctx, signal) {
   if (!aiReady()) return null;
   const inField = !!ctx?.field.editable;
   const jevOn = commandsOn() && config.jev.apiKey && front.pid;
+  // 讀不到畫面的 app（例如 LINE）會用截圖認出來的字補上
+  const screen = { elements: (opts) => axCall('elements', { pid: front.pid, ...opts }, 15000) };
   const judge = jevOn && inField
-    ? judgeInField(raw, front, ctx).catch((err) => { log(`Jev 判斷指令失敗：${err.message}`); return null; })
+    ? judgeInField({ raw, screen, decider, field: ctx.field, context: { app: ctx.app ?? '', window: ctx.window ?? '' } })
+      .then((v) => { noteCapturePermission(v.source); return v; }, (err) => { log(`Jev 判斷指令失敗：${err.message}`); return null; })
     : null;
   // 游標不在輸入框：同時問 Jev 是不是指令（不多花時間），只在 AI 說是打字時才用得到
   const intent = jevOn && !inField
@@ -528,71 +883,56 @@ async function aiEdit(raw, front, ctx) {
     style: styleFor(config, front.bundle, ctx?.url),
     vocabulary: config.openai.keywords,
     commands: commandsOn(),
+    hedge: config.speed.hedge,
+    signal,
   });
-  try {
-    let result = await edit(raw);
-    const verdict = judge ? await judge : null;
-    const jevNote = verdict ? `；Jev：是指令的機率 ${verdict.command.toFixed(2)}${verdict.named ? `，講到「${verdict.named.label}」` : ''}` : '';
-    log(`AI 整理（${result.model}，${result.ms} ms，${result.mode}）：${result.mode === 'command' ? result.goal : result.text || '（無）'}${jevNote}`);
-    if (result.keptRaw) log('AI 把不只語氣詞的話整理成空的：照原稿寫');
-    // 游標在輸入框：AI 說是指令、Jev 看了畫面說不是，當成要打的字。開頭講「指令」或「command」、
-    // 傳訊息給某人（AI 拆出了要寫的訊息）照 AI：Jev 只看畫面上的按鈕，傳訊息的對象不在畫面上，實測 8 次都被擋掉
-    if (result.mode === 'command' && verdict && !verdict.isCommand && !/^\s*(指令|command)/i.test(raw) && !result.message?.trim()) {
-      log('AI 說是指令、Jev 說不是：當成要打的字，貼原稿');
-      return null;
-    }
-    if (result.mode !== 'command' && intent) {
-      const p = await intent;
-      if (p !== null && p >= NOT_IN_FIELD_SURE) {
-        const forced = await edit(`指令，${raw}`);
-        if (forced.mode === 'command') {
-          log(`游標不在輸入框，AI 說是打字、Jev 確定是要操作畫面（${p.toFixed(2)}）：當成指令（${forced.goal}）`);
-          return forced;
-        }
-      } else if (p !== null) log(`游標不在輸入框，Jev 覺得是指令的機率 ${p.toFixed(2)}：照 AI 當成打字`);
-    }
-    if (result.mode !== 'command' && inField && verdict?.isCommand) {
-      // Jev 看了畫面很確定是要操作：照「指令，……」再請 AI 拆一次目標和要搜尋的字
-      const forced = await edit(`指令，${raw}`);
-      if (forced.mode === 'command') {
-        log(`游標在輸入框，但 Jev 確定是要操作畫面：當成指令（${forced.goal}）`);
-        result = forced;
-      }
-    }
-    return result;
-  } catch (err) {
-    log(`AI 整理失敗，改貼原稿：${err.message}`);
-    lastError = { message: err.message, at: Date.now() };
-    return null;
-  }
+  return judgeUtterance({ raw, inField, edit, judge, intent, aborted: () => !!signal?.aborted, log });
 }
 
 const openApp = (name) => new Promise((resolve) => {
   execFile('/usr/bin/open', ['-a', name], { timeout: 5000 }, (err) => resolve(!err));
 });
 
-// 第三層（指令）：直接操作 app
+// 第三層（指令）：交給核心的操作代理（core/agent.mjs 的 runAgent，CubeLV 同一套）：每一步讀最前面那個 app 的畫面
+// （bin/agent-screen.mjs），AI 挑工具做，做到畫面就是目標。傳訊息給某人也一樣，要寫的訊息、要去的 app 放進目標裡
 async function runVoiceCommand(result, raw, front, ctx) {
-  log(`指令：${result.goal}${result.text ? `（要搜尋「${result.text}」）` : ''}${result.message ? `（要寫「${result.message}」，不送出）` : ''}${result.app ? `，先切到 ${result.app}` : ''}`);
+  const goal = [
+    result.goal,
+    result.app && !result.goal.includes(result.app) ? `（在 ${result.app}）` : '',
+    result.message ? `（要寫的訊息：${result.message}）` : '',
+  ].join('');
+  log(`指令：${goal}`);
   if (dryPaste) {
-    emit({ type: 'command', goal: result.goal, text: result.text, app: result.app, dry: true });
+    emit({ type: 'command', goal: result.goal, app: result.app, message: result.message, dry: true });
     return '';
   }
+  bubble('command', { text: result.goal });
+  const ai = service(aiSettings());
   let outcome;
   try {
-    outcome = await runCommand({
-      ax, decider, log, frontApp, openApp, goal: result.goal, text: result.text, message: result.message, app: result.app, context: { app: ctx?.app ?? '' },
+    outcome = await runAgent({
+      screen: createMacAgentScreen({ ax, frontApp, openApp, log }),
+      complete: (req) => ai.complete(req),
+      goal,
+      said: raw,
+      context: { app: ctx?.app ?? '' },
       stopped: () => existsSync(PAUSED),
+      // 小框跟著顯示做到哪一步（核心 stepText：「第 1 步：點「Gmail」」）
+      onStep: (step) => bubble('command', { text: result.goal, detail: stepText(step, ZH ? 'zh' : 'en') }),
+      log,
     });
   } catch (err) {
     outcome = { ok: false, reason: err.message, steps: [] };
   }
-  log(outcome.ok ? `指令完成：${outcome.steps.join(' → ') || '畫面本來就是'}` : `指令沒完成：${outcome.reason}`);
+  ctxCache = null;
+  const steps = outcome.steps ?? [];
+  log(outcome.ok ? `指令完成${outcome.summary ? `（${outcome.summary}）` : ''}：${steps.join(' → ') || '畫面本來就是'}` : `指令沒完成：${outcome.reason}`);
   hudWrite(outcome.ok ? 'pasted' : 'nofield');
+  bubble(outcome.ok ? 'done' : 'failed', { text: result.goal, detail: outcome.ok ? '' : outcome.reason });
   writeLast(raw);
-  emit({ type: 'command', goal: result.goal, ok: outcome.ok, steps: outcome.steps ?? [], reason: outcome.reason ?? '' });
+  emit({ type: 'command', goal: result.goal, ok: outcome.ok, steps, reason: outcome.reason ?? '', summary: outcome.summary ?? '' });
   if (config.ai.history) {
-    appendHistory({ app: ctx?.app ?? '', bundle: front.bundle, raw, mode: 'command', goal: result.goal, ok: outcome.ok, steps: outcome.steps ?? [] });
+    appendHistory({ app: ctx?.app ?? '', bundle: front.bundle, raw, mode: 'command', goal: result.goal, ok: outcome.ok, steps });
   }
   return '';
 }
@@ -615,10 +955,13 @@ async function replaceLast(front, replacement, label) {
   log(`${label}：游標前面已經不是剛貼的字（${r?.result ?? '小幫手沒回'}），沒動；原稿放在「複製上一句」`);
 }
 
+const NOFIELD_HINT = ZH ? '點選單列的 JarvisVoice →「複製上一句」可以拿回來' : 'Get it back from JarvisVoice in the menu bar → "Copy last sentence"';
+
 function skipNoField(raw, role) {
   writeLast(raw);
   log('游標不在輸入框，這段沒寫：', raw, `（${role}）`);
   hudWrite('nofield');
+  bubble('nofield', { detail: NOFIELD_HINT });
   emit({ type: 'skipped', text: raw, reason: `not-text-field:${role}` });
   return '';
 }
@@ -631,35 +974,70 @@ async function deliver(item, front) {
     return '';
   }
   const raw = item.kind === 'segment' ? item.raw : item.text;
-  let ctx = await readContext(front);
-  const inField = !ctx?.field.known || ctx.field.editable;
+  // 一段：提早整理好的（或上次整理好、只是當時寫不進去的）直接用，不再問一次 AI
+  if (item.kind === 'segment' && !item.prepared) {
+    bubble('working', { text: raw });
+    item.prepared = prepare(raw, front);
+  }
+  const prep = item.kind === 'segment' ? await item.prepared : null;
+  let ctx;
+  let inField;
+  let pick = null;
+  if (prep && prep.front.pid === front.pid) ({ ctx, inField, pick } = prep);
+  else {
+    // 一句一句貼（AI 關著），或整理時跟現在最前面的不是同一個 app：照現在的 app 讀
+    ctx = await contextFor(front);
+    inField = !ctx?.field.known || ctx.field.editable;
+  }
   // 不在輸入框、也沒開自動找或指令：不用送 AI
   if (!inField && !config.autoFocus && !commandsOn()) return skipNoField(raw, ctx.field.role);
-  // 上次已經整理好、只是當時寫不進去：直接用，不再問一次 AI
-  if (item.kind === 'segment' && !('result' in item)) item.result = await aiEdit(raw, front, ctx);
-  const result = item.kind === 'segment' ? item.result : null;
-  if (result?.mode === 'command') return runVoiceCommand(result, raw, front, ctx);
-  if (result?.mode === 'delete_last') { await replaceLast(front, '', '刪掉剛剛那段'); return ''; }
-  if (result?.mode === 'revert_last') {
+  // 整理完要做什麼：規則在核心（core/flow.mjs 的 planOutput），整理失敗照原稿寫
+  const plan = planOutput({ raw, result: prep?.result ?? null });
+  if (plan.failed) {
+    log(`AI 整理失敗，改貼原稿：${plan.failed}`);
+    lastError = { message: plan.failed, at: Date.now() };
+  }
+  if (plan.kind === 'command') return runVoiceCommand(plan.result, raw, front, ctx);
+  if (plan.kind === 'delete_last') { await replaceLast(front, '', '刪掉剛剛那段'); return ''; }
+  if (plan.kind === 'revert_last') {
     if (lastInserted?.ai) await replaceLast(front, withSpacing(lastInserted.raw), '換回原文');
     return '';
   }
-  if (result?.mode === 'insert' && !result.text.trim()) {
+  if (plan.kind === 'filler') {
     writeLast(raw);
+    bubble('hide');
     log('整段只有語氣詞，不寫：', raw);
     return '';
   }
+  const result = plan.result ?? null;
   if (!inField) {
-    if (!config.autoFocus || !(await focusBestField(front.pid, result ? result.text : raw, ctx))) return skipNoField(raw, ctx.field.role);
-    ctx = await readContext(front);
+    const chosen = config.autoFocus ? await (pick ?? pickField(front.pid, plan.text, ctx)) : null;
+    if (!chosen) return skipNoField(raw, ctx.field.role);
+    await focusField(chosen);
+    ctx = await readContext(front, { screen: false });
   }
-  const text = withSpacing(result ? result.text : raw);
-  writeLast(result ? result.text : raw);
+  const text = withSpacing(plan.text);
+  writeLast(plan.text);
   if (dryPaste) {
-    emit({ type: 'pasted', text, raw, mode: result?.mode ?? 'insert', dry: true });
+    const speed = speedNote(item, prep, Date.now(), Date.now());
+    if (speed) log(speed.line);
+    emit({ type: 'pasted', text, raw, mode: plan.mode, dry: true, ...(speed ? { latencyMs: speed.parts.total, timing: speed.parts } : {}) });
     return '';
   }
-  const pasted = await axCall('paste', { pid: front.pid, text, ask: !askedAccessibility }, 6000);
+  const pasteStartAt = Date.now();
+  let pasted = await axCall('paste', { pid: front.pid, text, ask: !askedAccessibility }, 6000);
+  // 要貼的時候游標已經不在輸入框（開口時在框裡，講完前點到按鈕、區塊，或焦點被 app 移走）：跟開口時就不在框裡一樣，
+  // 自動挑視窗裡的輸入框對焦再貼，不丟掉這段（10/25 兩段長話因為焦點在 AXGroup、AXPopUpButton 整段沒寫）
+  if (pasted?.result?.startsWith('not-text-field') && config.autoFocus) {
+    log(`要貼的時候游標不在輸入框（${pasted.result.slice(15)}），自動找輸入框`);
+    const chosen = await pickField(front.pid, plan.text, ctx);
+    if (chosen) {
+      await focusField(chosen);
+      ctx = await readContext(front, { screen: false });
+      pasted = await axCall('paste', { pid: front.pid, text, ask: !askedAccessibility }, 6000);
+    }
+  }
+  const pastedAt = Date.now();
   if (pasted?.result === 'no-accessibility') {
     if (!askedAccessibility) log('貼不進去：「JarvisVoice」還沒有輔助使用權限，開了就會補貼：', text);
     askedAccessibility = true;
@@ -672,8 +1050,9 @@ async function deliver(item, front) {
     return 'retry';
   }
   if (pasted?.result?.startsWith('not-text-field')) {
-    log('游標不在輸入框，這段沒寫：', text, `（${pasted.result.slice(15)}）`);
+    log('游標不在輸入框，視窗裡也找不到輸入框，這段沒寫（放在「複製上一句」）：', text, `（${pasted.result.slice(15)}）`);
     hudWrite('nofield');
+    bubble('nofield', { detail: NOFIELD_HINT });
     emit({ type: 'skipped', text, reason: pasted.result });
     return '';
   }
@@ -682,14 +1061,18 @@ async function deliver(item, front) {
     return '';
   }
   hudWrite('pasted');
+  ctxCache = null; // 游標前後的字變了，下次開口重讀
+  const speed = speedNote(item, prep, pasteStartAt, pastedAt);
   log(`已貼上：${text}`);
-  emit({ type: 'pasted', text, raw, mode: result?.mode ?? 'insert' });
+  if (speed) log(speed.line);
+  bubble('pasted');
+  emit({ type: 'pasted', text, raw, mode: result?.mode ?? 'insert', ...(speed ? { latencyMs: speed.parts.total, timing: speed.parts } : {}) });
   lastInserted = { pid: front.pid, text, raw, ai: !!result && result.text !== raw };
   if (ctx?.field.editable) rememberedTargets.set(`${front.pid}:${ctx.window}`, { role: ctx.field.role, label: ctx.field.label });
   if (config.ai.history) {
     appendHistory({
       app: ctx?.app ?? '', bundle: front.bundle, raw, text: result ? result.text : raw, mode: result?.mode ?? 'insert',
-      ai: result ? `${config.ai.provider}/${result.model}` : '', ms: result?.ms ?? 0,
+      ai: result ? `${config.ai.provider}/${result.model}` : '', ms: result?.ms ?? 0, ...(speed ? { latencyMs: speed.parts.total } : {}),
     });
   }
   // 詞彙表自動更新：記下用到的自動詞，不太頻繁地從畫面挑新的專有名詞
@@ -749,13 +1132,28 @@ async function tick() {
   const paused = existsSync(PAUSED);
   if (appMode && process.ppid !== parentPid) { shutdown(0); return; } // 選單列小程式不在了
   const front = always ? { bundle: 'test', pid: 0 } : await frontApp();
+  if (!always) lastFront = { ...front, at: Date.now() };
   const active = !paused && (always || allowed(front.bundle));
   frontActive = active;
 
   if (reopenCapture && ffmpeg && !inputFile) { reopenCapture = false; stopCapture(); }
+  if (ffmpeg && !inputFile && Date.now() - lastAudioAt > CAPTURE_STALL_MS) {
+    log(`麥克風 ${((Date.now() - lastAudioAt) / 1000).toFixed(1)} 秒沒有聲音進來（${captureName}卡住，多半是電腦睡醒或換了麥克風），重開麥克風`);
+    stopCapture();
+  }
   if (active && !ffmpeg && !inputFile && Date.now() >= captureRetryAt) startCapture();
   if (!active && ffmpeg && !inputFile) stopCapture();
-  if (!active && segment) segmentForce = true; // 暫停或切到不收音的 app：講到一半的那段先整理
+  if (!active && segmenter.has()) segmenter.force(); // 暫停或切到不收音的 app：講到一半的那段先整理
+
+  if (existsSync(VOICEPRINT_RESET)) {
+    try { unlinkSync(VOICEPRINT_RESET); } catch { /* 已經處理 */ }
+    if (voiceprint) {
+      voiceprint.reset();
+      log('重錄聲紋：從你接下來講的話錄樣本（約 10 秒，照常轉寫）');
+      lastSpeaker = '';
+      announceSettings();
+    }
+  }
 
   if (existsSync(REVERT)) {
     try { unlinkSync(REVERT); } catch { /* 已經處理 */ }
@@ -791,7 +1189,7 @@ async function main() {
   process.on('exit', releaseLock);
   setState('standby');
   startEngine();
-  setInterval(() => { checkSegment(); updateWorking(); }, SEGMENT_CHECK_MS);
+  setInterval(() => { segmenter.check(); updateWorking(); }, SEGMENT_CHECK_MS);
 
   if (inputFile) {
     startCapture();
@@ -801,9 +1199,9 @@ async function main() {
     finishTurn();
     // 等所有句子轉完、整理完、貼完
     const until = Date.now() + 30_000;
-    while (Date.now() < until && (engine.busy() || segment || outputQueue.length || outputBusy)) {
+    while (Date.now() < until && (engine.busy() || segmenter.has() || outputQueue.length || outputBusy)) {
       engine.flush();
-      if (!engine.busy()) segmentForce = true;
+      if (!engine.busy()) segmenter.force();
       void drainOutput(); // 寫不進去（不在最前面）的那段，等一下再試
       await new Promise((r) => setTimeout(r, 200));
     }

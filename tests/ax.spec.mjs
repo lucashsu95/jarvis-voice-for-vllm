@@ -1,4 +1,4 @@
-// AX 小幫手對真的視窗：開 tests/fixtures/test-window.js（不搶前景），讀上下文、找輸入框、對焦、列元件。
+// AX 小幫手對真的視窗：開 tests/fixtures/test-window.js（不搶前景），讀上下文、找輸入框、對焦、列元件；操作代理讀結構樹、動手。
 // 不送任何按鍵：測試視窗不在最前面，貼上要回 not-front，填字改成直接設值。跑測試的程式沒有「輔助使用」權限就跳過。
 
 import assert from 'node:assert/strict';
@@ -6,8 +6,9 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createAx } from '../bin/ax.mjs';
-import { runCommand } from '../bin/commander.mjs';
-import { createDecider } from '../bin/decide.mjs';
+import { createMacAgentScreen } from '../bin/agent-screen.mjs';
+import { runAgent } from '../core/agent.mjs';
+import { ownKeyService } from '../core/providers.mjs';
 import { readingOrder } from '../core/ocr.mjs';
 import { bringToFront, sendToBack, startBundle } from './fixtures/front.mjs';
 
@@ -100,41 +101,53 @@ async function openStockWindow() {
 
 const title = async (pid) => (await ax.call('elements', { pid })).window.title;
 
-test('指令模式對真的視窗（背景、不送按鍵）：填字 → 確認 → 點結果', { skip: !trusted && '沒有輔助使用權限', timeout: 30_000 }, async () => {
+// 照劇本回的 AI：每一步在結構樹裡找名字對得上的編號
+function scriptedAi(plan) {
+  const seen = [];
+  return {
+    seen,
+    async complete({ user }) {
+      seen.push(user);
+      const next = plan[Math.min(seen.length - 1, plan.length - 1)];
+      const ref = next.name ? user.match(new RegExp(`\\[(e\\d+)\\][^\\n]*「${next.name}」`))?.[1] : undefined;
+      return JSON.stringify({ tool: next.tool, args: { ...(ref ? { ref } : {}), ...(next.args ?? {}) }, why: '' });
+    },
+  };
+}
+
+test('操作代理對真的視窗（背景、不送按鍵）：讀結構樹 → 填字 → Enter（搜尋框確認）→ 點結果；選單列對不到說那一層有什麼', { skip: !trusted && '沒有輔助使用權限', timeout: 30_000 }, async () => {
   const win = await openStockWindow();
   try {
-    const plan = [['fill', '搜尋股票'], ['enter', ''], ['click', '台積電 2330'], ['done', '']];
-    let options = '';
-    const decider = {
-      engine: () => '劇本',
-      async decide(state, questions) {
-        options += Object.values(questions.target.criteria).join('|');
-        const [action, label] = plan[state.done_steps.length];
-        const hit = Object.entries(questions.target.criteria).find(([, d]) => label && d.includes(`「${label}」`));
-        return { action: { choice: action, confidence: 0.9 }, target: { choice: hit?.[0] ?? 'e0', confidence: hit ? 0.9 : 0.1 } };
-      },
-    };
-    const result = await runCommand({
-      ax, decider, log: () => {}, frontApp: async () => ({ pid: win.pid }), openApp: async () => true,
-      goal: '打開台積電（2330）的個股頁', text: '台積電', context: { app: '看盤' },
-    });
+    const screen = createMacAgentScreen({ ax, frontApp: async () => ({ pid: win.pid }), openApp: async () => false });
+    const first = await screen.snapshot();
+    assert.match(first.text, /\[e\d+\] 按鈕「刪除自選」/, '畫面上的按鈕都要給 AI 看');
+    assert.match(first.text, /\[e\d+\] 輸入框「搜尋股票」（搜尋框/);
+    assert.match(first.text, /選單列（用 menu 選裡面的項目）：.*編輯/);
+    assert.match((await screen.run({ tool: 'menu', args: { path: ['編輯', '不存在的項目'] }, why: '' })).note, /這一層有：貼上、全選/);
+    const ai = scriptedAi([
+      { tool: 'fill', name: '搜尋股票', args: { text: '台積電' } },
+      { tool: 'press_key', name: '搜尋股票', args: { key: 'Enter' } },
+      { tool: 'click', name: '台積電 2330' },
+      { tool: 'done', args: { summary: '個股頁' } },
+    ]);
+    const result = await runAgent({ screen, complete: ai.complete, goal: '打開台積電（2330）的個股頁', context: { app: '看盤' } });
     assert.equal(result.ok, true, result.reason);
     assert.equal(await title(win.pid), '台積電 2330 個股');
-    assert.ok(options.includes('刪除自選'), '畫面上的按鈕都要給決策器看');
+    assert.match(ai.seen[2], /\[e\d+\] 按鈕「台積電 2330」/, '搜尋完的結果要讀得到');
   } finally {
     win.kill();
   }
 });
 
-// 有 TYPESAFE_API_KEY 才跑：真的 Jev 決定每一步
-test('指令模式 + 真的 Jev', { skip: (!trusted && '沒有輔助使用權限') || (!process.env.TYPESAFE_API_KEY && '沒有 TYPESAFE_API_KEY'), timeout: 60_000 }, async () => {
+// 有 OPENAI_API_KEY 才跑：真的 AI 每一步看結構樹挑工具
+test('操作代理 + 真的 AI', { skip: (!trusted && '沒有輔助使用權限') || (!process.env.OPENAI_API_KEY && '沒有 OPENAI_API_KEY'), timeout: 120_000 }, async () => {
   const win = await openStockWindow();
   try {
-    const decider = createDecider(() => ({ jevKey: process.env.TYPESAFE_API_KEY, jevModel: 'jev-latest' }));
-    const base = { ax, decider, log: () => {}, frontApp: async () => ({ pid: win.pid }), openApp: async () => true, context: { app: '看盤' } };
-    assert.equal((await runCommand({ ...base, goal: '打開台積電（2330）的個股頁', text: '台積電' })).ok, true);
+    const { complete } = ownKeyService({ provider: 'openai', apiKey: process.env.OPENAI_API_KEY, timeoutMs: 20000 });
+    const run = (goal) => runAgent({ screen: createMacAgentScreen({ ax, frontApp: async () => ({ pid: win.pid }), openApp: async () => false }), complete, goal, context: { app: '看盤' } });
+    assert.equal((await run('打開台積電（2330）的個股頁')).ok, true);
     assert.equal(await title(win.pid), '台積電 2330 個股');
-    assert.equal((await runCommand({ ...base, goal: '打開設定頁', text: '' })).ok, true);
+    assert.equal((await run('打開設定頁')).ok, true);
     assert.equal(await title(win.pid), '設定');
   } finally {
     win.kill();
@@ -166,10 +179,11 @@ test('貼上與換回原文（測試視窗在最前面）', {
     assert.equal((await ax.call('replace', { pid, old: '嗯我們明天三點不對四點開會。', text: '' })).result, 'ok');
     await new Promise((r) => setTimeout(r, 200));
     assert.equal((await ax.call('read', { handle })).value, '');
-    // 游標不在剛填的那個框：不按 Enter（游標在訊息框按 Enter 會送出）
+    // 操作代理的按鍵：在最前面才送，組合鍵、認不得的鍵
     const { candidates } = await ax.call('targets', { pid });
     const subject = candidates.find((c) => c.label === '主旨');
-    assert.equal((await ax.call('act', { pid, handle: subject.handle, action: 'enter' })).result, 'not-focused');
+    assert.equal((await ax.call('act', { pid, handle: subject.handle, action: 'key', key: 'cmd+a' })).result, 'ok');
+    assert.equal((await ax.call('act', { pid, action: 'key', key: '不存在的鍵' })).result, 'unknown-key');
   } finally {
     win.kill();
     if (startBundle) execFileSync('/usr/bin/open', ['-b', startBundle]);

@@ -1,4 +1,4 @@
-// 第二、三層的零件測試：AI 整理（三家）、設定、找輸入框、Jev 決策、指令模式、自動學詞、整條管線（音檔 → 轉寫 → 整理）。
+// 第二、三層的零件測試：AI 整理（三家）、設定、找輸入框、Jev 決策、指令（Mac 的操作代理接頭）、自動學詞、整條管線（音檔 → 轉寫 → 整理）。
 // 雲端服務都用本機假伺服器。node --test tests/*.spec.mjs
 
 import assert from 'node:assert/strict';
@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 const stateDir = mkdtempSync(join(tmpdir(), 'voice-dictation-ai-test-'));
@@ -15,8 +15,10 @@ process.env.VOICE_DICTATION_STATE_DIR = stateDir;
 const { buildPrompt, parseResult, editSegment } = await import('../bin/editor.mjs');
 const { loadConfig, aiKey, styleFor } = await import('../bin/config.mjs');
 const { rankTargets } = await import('../bin/targeter.mjs');
-const { createDecider, fieldQuestions, stepQuestions } = await import('../bin/decide.mjs');
-const { runCommand } = await import('../bin/commander.mjs');
+const { createDecider, fieldQuestions } = await import('../bin/decide.mjs');
+const { createMacAgentScreen, treeNodes, treeHeader } = await import('../bin/agent-screen.mjs');
+const { writeTree } = await import('../core/agentScreen.mjs');
+const { runAgent } = await import('../core/agent.mjs');
 const { extractEdited, replacedChunks } = await import('../bin/learn.mjs');
 const { createVocabAuto, splitVocabulary, plausibleTerm, AUTO_HEADER } = await import('../bin/vocab-auto.mjs');
 const { wavFromPcm16 } = await import('../bin/engines/batch.mjs');
@@ -195,78 +197,169 @@ test('決策器：有 Jev key 打 /v1/systemone；沒有就把同樣的問題交
   }
 });
 
-// 假的 AX 小幫手：記下做過的動作，畫面照步驟換
-function fakeAx(screens) {
+const el = (handle, role, label, y = 100) => ({ handle, role, subrole: '', label, x: 10, y, w: 100, h: 20, focused: false });
+
+// AX 小幫手 tree 回的節點（只填用得到的）
+const ctl = (handle, role, name, extra = {}) => ({ depth: 0, kind: 'control', role, subrole: '', name, value: '', off: false, handle, x: 10, y: 100, w: 100, h: 20, ...extra });
+
+test('Mac 操作代理接頭：輔助使用樹寫成跟 CubeLV 一樣的結構樹；選單列寫在最前面', () => {
+  const res = {
+    app: 'Finder', window: { title: '應用程式' }, menus: ['Finder', '檔案', '編輯'],
+    nodes: [
+      { depth: 0, kind: 'group', role: 'AXToolbar', subrole: '', name: '' },
+      ctl(1, 'AXButton', '返回', { depth: 1, enabled: false }),
+      ctl(2, 'AXTextField', '搜尋', { depth: 1, subrole: 'AXSearchField', value: '鴻海', focused: true }),
+      { depth: 0, kind: 'scroll', name: '', states: ['下面還有'], handle: 3 },
+      { depth: 1, kind: 'group', role: 'AXOutline', subrole: '', name: '側邊欄' },
+      ctl(4, 'AXRow', '應用程式', { depth: 2, selected: true }),
+      ctl(5, 'AXDisclosureTriangle', '', { depth: 2, expanded: false }),
+      ctl(6, 'AXRadioButton', '圖示', { depth: 1, parent: 'AXTabGroup', checked: true }),
+      ctl(7, 'AXCheckBox', '顯示隱藏檔', { depth: 1, subrole: 'AXSwitch', checked: true }),
+      { depth: 1, kind: 'text', name: '12 個項目' },
+      ctl(8, 'AXLink', '說明', { depth: 1, off: true }),
+    ],
+  };
+  const view = writeTree(treeNodes(res), { header: treeHeader(res) });
+  assert.deepEqual(view.text.split('\n'), [
+    'App：Finder；視窗：應用程式',
+    '選單列（用 menu 選裡面的項目）：Finder、檔案、編輯',
+    '工具列',
+    '  [e1] 按鈕「返回」（不能按）',
+    '  [e2] 輸入框「搜尋」，裡面是「鴻海」（搜尋框，游標在這）',
+    '[e3] 可捲動區（下面還有）',
+    '  清單「側邊欄」',
+    '    [e4] 清單項目「應用程式」（選中）',
+    '    [e5] 展開鈕「沒有名字」（收起）',
+    '  [e6] 分頁「圖示」（選中）',
+    '  [e7] 開關「顯示隱藏檔」（勾了）',
+    '  「12 個項目」',
+    '  [e8] 連結「說明」（畫面外）',
+  ]);
+});
+
+test('Mac 操作代理接頭：讀不到樹時截圖認出來的字補進沒有名字的列，其他的字列成點位置的「畫面上的字」；圖示認成一個字不算名字', () => {
+  const res = {
+    app: 'LINE', window: { title: 'LINE' }, menus: [],
+    nodes: [
+      ctl(1, 'AXTextArea', '', { focused: true, x: 300, y: 700, w: 400, h: 60 }),
+      ctl(2, 'AXRow', '', { x: 0, y: 100, w: 250, h: 70 }),
+      ctl(3, 'AXRow', '', { x: 0, y: 170, w: 250, h: 70 }),
+      ctl(4, 'AXButton', '', { x: 0, y: 20, w: 30, h: 30 }),
+    ],
+    ocr: { permission: true, items: [
+      { text: 'bubu', x: 20, y: 110, w: 60, h: 20 }, { text: '下午 9:30', x: 150, y: 110, w: 60, h: 20 },
+      { text: '微波烤箱廢物食堂', x: 20, y: 180, w: 120, h: 20 },
+      { text: '①', x: 5, y: 25, w: 20, h: 20 },
+      { text: '你好帥', x: 400, y: 400, w: 60, h: 20 },
+    ] },
+  };
+  const nodes = treeNodes(res);
+  const text = writeTree(nodes).text;
+  assert.match(text, /\[e2\] 清單項目「bubu 下午 9:30」/);
+  assert.match(text, /\[e3\] 清單項目「微波烤箱廢物食堂」/);
+  assert.match(text, /\[e4\] 按鈕「沒有名字」/);
+  assert.match(text, /截圖認出來的字（讀不到結構，點下去是點那個位置）\n  \[e5\] 畫面上的字「你好帥」/);
+  assert.deepEqual(nodes.at(-1).target, { at: { x: 430, y: 410 } });
+  assert.match(treeHeader({ app: 'LINE', window: {}, ocr: { permission: false, items: [] } }).join('\n'), /螢幕錄影/);
+});
+
+// 假的 AX 小幫手：tree 照 page 回，act 記下來、照劇本換頁
+function fakeAx(pages, start, onAct) {
+  let page = start;
   const acts = [];
-  let step = 0;
   return {
     acts,
+    page: () => page,
+    go: (next) => { page = next; },
     async call(op, args) {
-      // 每做一步畫面就變（標題帶步數），不會被「做了畫面沒變就停」擋下
-      if (op === 'elements') { const sc = screens[Math.min(step, screens.length - 1)]; return { ...sc, window: { ...sc.window, title: `${sc.window?.title ?? ''}#${step}` } }; }
-      if (op === 'act') { acts.push(args); step += 1; return { result: 'ok' }; }
+      if (op === 'tree') return { app: pages[page].app ?? 'AStock', window: { title: page }, menus: ['檔案'], nodes: pages[page].nodes, partial: false, seen: 1, treeMs: 1, ms: 1 };
+      if (op === 'act') { acts.push(args); const r = onAct(args, page); if (r?.page) page = r.page; return r?.result ?? { result: 'ok' }; }
       throw new Error(op);
     },
   };
 }
 
-const el = (handle, role, label, y = 100) => ({ handle, role, subrole: '', label, x: 10, y, w: 100, h: 20, focused: false });
-
-test('指令模式：搜尋框填字 → Enter → 點結果 → 完成；畫面上的東西全部都是選項', async () => {
-  const win = { x: 0, y: 0, w: 1000, h: 800, title: '自選股' };
-  const screens = [
-    { window: win, elements: [el(1, 'AXButton', '刪除自選'), el(2, 'AXTextField', '搜尋股票', 20), el(3, 'AXLink', '大盤')] },
-    { window: win, elements: [el(2, 'AXTextField', '搜尋股票', 20)] },
-    { window: { ...win, title: '搜尋結果' }, elements: [el(4, 'AXLink', '台積電 2330'), el(5, 'AXLink', '台積電 ADR')] },
-    { window: { ...win, title: '台積電 2330' }, elements: [el(6, 'AXLink', '技術分析')] },
-  ];
-  const ax = fakeAx(screens);
-  const plan = [
-    { action: 'fill', target: '搜尋股票' },
-    { action: 'enter' },
-    { action: 'click', target: '台積電 2330' },
-    { action: 'done' },
-  ];
-  const seenOptions = [];
-  const decider = {
-    engine: () => 'Jev',
-    async decide(state, questions) {
-      seenOptions.push(Object.values(questions.target.criteria).join('|'));
-      const next = plan[state.done_steps.length];
-      const entry = Object.entries(questions.target.criteria).find(([, d]) => next.target && d.includes(next.target));
-      return {
-        action: { choice: next.action, confidence: 0.9 },
-        target: entry ? { choice: entry[0], confidence: 0.8 } : { choice: 'e0', confidence: 0.1 },
-      };
+// 假 AI：每一步看結構樹，照劇本找編號（name 對得上的那一個）
+function scriptedAi(plan) {
+  const seen = [];
+  return {
+    seen,
+    async complete({ user }) {
+      seen.push(user);
+      const next = plan[Math.min(seen.length - 1, plan.length - 1)];
+      const ref = next.name ? user.match(new RegExp(`\\[(e\\d+)\\][^\\n]*「${next.name}」`))?.[1] : undefined;
+      return JSON.stringify({ tool: next.tool, args: { ...(ref ? { ref } : {}), ...(next.args ?? {}) }, why: next.why ?? '' });
     },
   };
-  const logs = [];
-  const result = await runCommand({
-    ax, decider, log: (m) => logs.push(m), frontApp: async () => ({ pid: 42, bundle: 'x' }), openApp: async () => true,
-    goal: '打開台積電（2330）的個股頁', text: '台積電', context: { app: 'AStock' },
-  });
-  assert.equal(result.ok, true);
-  assert.deepEqual(ax.acts.map((a) => [a.action, a.handle, a.text ?? '']), [['fill', 2, '台積電'], ['enter', 2, ''], ['press', 4, '']]);
-  assert.equal(result.steps.length, 3);
-  assert.ok(seenOptions[0].includes('刪除自選'), '畫面上的按鈕都要給決策器看');
+}
+
+test('Mac 操作代理：照 AI 挑的工具做：填字 → 按 Enter → 點結果 → 完成；小框寫畫面上的名字', async () => {
+  const pages = {
+    自選股: { nodes: [ctl(1, 'AXButton', '刪除自選'), ctl(2, 'AXTextField', '搜尋股票', { subrole: 'AXSearchField' })] },
+    搜尋結果: { nodes: [ctl(2, 'AXTextField', '搜尋股票', { subrole: 'AXSearchField', value: '台積電' }), ctl(4, 'AXButton', '台積電 2330'), ctl(5, 'AXButton', '台積電 ADR')] },
+    個股: { nodes: [{ depth: 0, kind: 'heading', name: '台積電 2330' }, ctl(6, 'AXLink', '技術分析')] },
+  };
+  const ax = fakeAx(pages, '自選股', (a) => (a.action === 'key' ? { page: '搜尋結果' } : a.action === 'press' && a.handle === 4 ? { page: '個股' } : null));
+  const ai = scriptedAi([
+    { tool: 'fill', name: '搜尋股票', args: { text: '台積電' } },
+    { tool: 'press_key', name: '搜尋股票', args: { key: 'Enter' } },
+    { tool: 'click', name: '台積電 2330' },
+    { tool: 'done', args: { summary: '台積電的個股頁' } },
+  ]);
+  const steps = [];
+  const screen = createMacAgentScreen({ ax, frontApp: async () => ({ pid: 42 }), openApp: async () => true });
+  screen.settle = async () => {};
+  const r = await runAgent({ screen, complete: ai.complete, goal: '打開台積電（2330）的個股頁', context: { app: 'AStock' }, onStep: (s) => steps.push(s) });
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(ax.acts.map((a) => [a.action, a.handle, a.text ?? a.key ?? '']), [['fill', 2, '台積電'], ['key', 2, 'Enter'], ['press', 4, '']]);
+  assert.ok(ax.acts.every((a) => a.pid === 42));
+  assert.match(ai.seen[0], /\[e1\] 按鈕「刪除自選」/, '畫面上的按鈕都要給 AI 看');
+  assert.match(ai.seen[0], /選單列（用 menu 選裡面的項目）：檔案/);
+  assert.deepEqual(steps.map((s) => [s.action, s.target]), [['fill', '「搜尋股票」：「台積電」'], ['press_key', 'Enter'], ['click', '「台積電 2330」']]);
 });
 
-test('指令模式：信心太低（動作 < 0.3、對象 < 0.25）就停、按了暫停就停、要切 app 找不到就說', async () => {
-  const ax = fakeAx([{ window: { title: 'x' }, elements: [el(1, 'AXButton', '設定')] }]);
-  const unsure = { engine: () => 'Jev', decide: async () => ({ action: { choice: 'click', confidence: 0.2 }, target: { choice: 'e0', confidence: 0.9 } }) };
-  const base = { ax, log: () => {}, frontApp: async () => ({ pid: 1 }), goal: '打開設定', context: { app: 'Slack' } };
-  const r = await runCommand({ ...base, decider: unsure, openApp: async () => true });
-  assert.equal(r.ok, false);
-  assert.match(r.reason, /不確定下一步/);
-  assert.equal(ax.acts.length, 0);
-  const vague = { engine: () => 'Jev', decide: async () => ({ action: { choice: 'click', confidence: 0.35 }, target: { choice: 'e0', confidence: 0.2 } }) };
-  assert.match((await runCommand({ ...base, decider: vague, openApp: async () => true })).reason, /不確定要點哪一個/);
-  const sure = { engine: () => 'Jev', decide: async () => ({ action: { choice: 'click', confidence: 0.35 }, target: { choice: 'e0', confidence: 0.3 } }) };
-  const paused = await runCommand({ ...base, decider: sure, openApp: async () => true, stopped: () => ax.acts.length >= 2 });
-  assert.match(paused.reason, /按了暫停/);
-  assert.equal(ax.acts.length, 2); // 門檻以上照做，按暫停才停
-  const missing = await runCommand({ ...base, decider: unsure, openApp: async () => false, app: '不存在的 App' });
-  assert.match(missing.reason, /找不到 app/);
+test('傳訊息給某人也走操作代理：切到 LINE → 點截圖認出來的對話 → 在訊息框填字；Mac 的工具（選單列、切 app、網址）', async () => {
+  const pages = {
+    Finder: { app: 'Finder', nodes: [ctl(1, 'AXButton', '分享')] },
+    LINE: { app: 'LINE', nodes: [ctl(2, 'AXRow', '', { x: 0, y: 100, w: 250, h: 70 })] },
+    對話: { app: 'LINE', nodes: [ctl(3, 'AXTextArea', '', { x: 300, y: 700, w: 400, h: 60 })] },
+  };
+  const ax = fakeAx(pages, 'Finder', (a) => (a.action === 'press' && a.handle === 2 ? { page: '對話' } : null));
+  const opened = [];
+  // 切到 LINE 之後，下一步讀的是最前面的 LINE
+  const screen = createMacAgentScreen({
+    ax, frontApp: async () => ({ pid: ax.page() === 'Finder' ? 1 : 2 }),
+    openApp: async (name) => { opened.push(name); ax.go(name); return true; },
+    openUrl: async () => false,
+  });
+  screen.settle = async () => {};
+  const ai = scriptedAi([
+    { tool: 'open_app', args: { name: 'LINE' } },
+    { tool: 'click', name: '沒有名字' },
+    { tool: 'fill', name: '沒有名字', args: { text: '你好' } },
+    { tool: 'done', args: { summary: '寫好了' } },
+  ]);
+  const steps = [];
+  const r = await runAgent({ screen, complete: ai.complete, goal: '打開和 BU 的對話，寫好要傳的訊息（在 LINE）（要寫的訊息：你好）', onStep: (s) => steps.push(s) });
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(opened, ['LINE']);
+  assert.equal(steps[0].target, '「LINE」');
+  assert.deepEqual(ax.acts.map((a) => [a.action, a.handle, a.text ?? '', a.pid]), [['press', 2, '', 2], ['fill', 3, '你好', 2]]);
+  assert.match(ai.seen[0], /- open_app\(name/);
+  // 選單列對不到：告訴 AI 那一層有什麼；打不開網址說原因；不在最前面不按
+  const menuAx = { async call(op, args) {
+    if (op === 'tree') return { app: 'X', window: { title: 'x' }, menus: [], nodes: [ctl(9, 'AXButton', '設定')], ms: 1 };
+    if (args.action === 'menu') return { result: 'no-menu', options: ['新增視窗', '關閉視窗'], level: 1 };
+    return { result: 'not-front' };
+  } };
+  const plain = createMacAgentScreen({ ax: menuAx, frontApp: async () => ({ pid: 5 }), openApp: async () => false, openUrl: async () => false });
+  await plain.snapshot();
+  assert.match((await plain.run({ tool: 'menu', args: { path: '檔案 > 新增分頁' }, why: '' })).note, /選單列裡沒有「新增分頁」（這一層有：新增視窗、關閉視窗）/);
+  assert.match((await plain.run({ tool: 'open_url', args: { url: 'youtube.com' }, why: '' })).note, /打不開「youtube.com」/);
+  assert.match((await plain.run({ tool: 'click', args: { ref: 'e1' }, why: '' })).note, /不在最前面/);
+  assert.match((await plain.run({ tool: 'click', args: { ref: 'e7' }, why: '' })).note, /找不到 e7/);
+  assert.equal(plain.describe({ tool: 'menu', args: { path: ['檔案', '新增視窗'] }, why: '' }), '「檔案 > 新增視窗」');
+  assert.equal(plain.describe({ tool: 'open_url', args: { url: 'https://youtube.com' }, why: '' }), '「youtube.com」');
 });
 
 test('自動學詞：找出使用者改過的那段、只算換掉的字', () => {
@@ -300,6 +393,17 @@ test('詞彙表自動更新：加在最後的自動區、你自己寫的不動�
   assert.deepEqual(splitVocabulary(read()), { manualText: '# 產品\nCubeLV\n平行沙盒  # 中文名', manual: ['CubeLV', '平行沙盒'], auto: ['JarvisVoice'] });
   assert.equal(plausibleTerm('Route 53'), true);
   assert.equal(plausibleTerm('2330'), false);
+});
+
+test('詞彙表自動更新：雜湊、ID 不收；舊版收進來的載入時拿掉', () => {
+  for (const id of ['5fd0ff27', 'b21cbc6', 'main 8827e2c', 'commit 6a9545fe', 'g-5de434e5', '书友160304113206784']) assert.equal(plausibleTerm(id), false, id);
+  for (const word of ['a16z', 'SR008', 'arm64', 'v3.6556.2', 'renderer-dev-web-5177', 'cubelv_ai_prompt_server', 'facade']) assert.equal(plausibleTerm(word), true, word);
+  const { file, vocab, logs, read } = vocabFixture(`CubeLV\n\n${AUTO_HEADER}\nJarvisVoice\n6cad1cae\n`);
+  writeFileSync(join(dirname(file), 'vocabulary-auto.json'), JSON.stringify({ terms: {}, candidates: { ff9e825: { seen: 2, first: 0, last: 0 }, DeepSeek: { seen: 1, first: 0, last: 0 } } }));
+  vocab.noteHits('隨便講一句');
+  assert.equal(read(), `CubeLV\n\n${AUTO_HEADER}\nJarvisVoice\n`);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dirname(file), 'vocabulary-auto.json'), 'utf8')).candidates), ['DeepSeek']);
+  assert.ok(logs.some((m) => m.includes('6cad1cae')));
 });
 
 test('詞彙表自動更新：畫面上的詞要 3 次不同時候（相隔 10 分鐘）都看到才加；講到了就直接加', () => {
@@ -388,20 +492,45 @@ async function runListener(dir, config, env) {
 
 const transcribeServer = () => fakeJson((call, n) => ({ body: { text: n === 1 ? '嗯第一句。' : '第二句。' } }));
 
-test('整條管線：AI 整理開著時，兩句合成一段只問一次 AI，貼 AI 整理後的字', { timeout: 30_000 }, async () => {
+test('整條管線：AI 整理開著時，兩句合成一段，貼 AI 整理後的字；中間停頓時提早整理的那次作廢；講完 1.2 秒就貼', { timeout: 30_000 }, async () => {
   const stt = await transcribeServer();
   const chat = await fakeJson(() => chatReply({ mode: 'insert', text: '第一句，第二句。', goal: '', app: '' }));
   try {
     const dir = mkdtempSync(join(tmpdir(), 'voice-dictation-pipe-'));
     const events = await runListener(dir, {
+      engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 }, speed: { hedge: 1 },
+    }, { VOICE_DICTATION_OPENAI_HTTP_URL: `${stt.url}/v1/audio/transcriptions`, VOICE_DICTATION_OPENAI_CHAT_URL: `${chat.url}/chat` });
+    const pasted = events.filter((e) => e.type === 'pasted');
+    assert.equal(stt.calls.length, 2); // 停 0.4 秒先送的那份就是這句的結果，不重送
+    assert.equal(chat.calls.length, 2); // 第一句一回來就先整理，第二句開口就作廢
+    assert.match(chat.calls[0].body.messages[1].content, /<transcript>嗯第一句。<\/transcript>/);
+    assert.match(chat.calls[1].body.messages[1].content, /<transcript>嗯第一句。第二句。<\/transcript>/);
+    assert.deepEqual(pasted.map((e) => [e.text, e.raw]), [['第一句，第二句。', '嗯第一句。第二句。']]);
+    assert.equal(readFileSync(join(dir, 'last.txt'), 'utf8'), '第一句，第二句。');
+    assert.equal(pasted[0].timing.earlyTranscribe, true);
+    assert.equal(pasted[0].timing.earlyPolish, true);
+    assert.ok(pasted[0].latencyMs >= 1200 && pasted[0].latencyMs < 1500, `停 1.2 秒就貼，不等 segmentPauseMs：${pasted[0].latencyMs} ms`);
+  } finally {
+    stt.close();
+    chat.close();
+  }
+});
+
+test('整條管線：提早轉寫、提早整理都關掉時照原本，停滿 segmentPauseMs 才整理、只問一次 AI', { timeout: 30_000 }, async () => {
+  const stt = await transcribeServer();
+  const chat = await fakeJson(() => chatReply({ mode: 'insert', text: '第一句，第二句。', goal: '', app: '' }));
+  try {
+    const events = await runListener(mkdtempSync(join(tmpdir(), 'voice-dictation-pipe-')), {
       engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 },
+      speed: { hedge: 1, earlyTranscribeMs: 0, pasteAfterMs: 0 },
     }, { VOICE_DICTATION_OPENAI_HTTP_URL: `${stt.url}/v1/audio/transcriptions`, VOICE_DICTATION_OPENAI_CHAT_URL: `${chat.url}/chat` });
     const pasted = events.filter((e) => e.type === 'pasted');
     assert.equal(stt.calls.length, 2);
     assert.equal(chat.calls.length, 1);
-    assert.match(chat.calls[0].body.messages[1].content, /<transcript>嗯第一句。第二句。<\/transcript>/);
-    assert.deepEqual(pasted.map((e) => [e.text, e.raw]), [['第一句，第二句。', '嗯第一句。第二句。']]);
-    assert.equal(readFileSync(join(dir, 'last.txt'), 'utf8'), '第一句，第二句。');
+    assert.deepEqual(pasted.map((e) => e.text), ['第一句，第二句。']);
+    assert.equal(pasted[0].timing.earlyTranscribe, false);
+    assert.equal(pasted[0].timing.earlyPolish, false);
+    assert.ok(pasted[0].latencyMs >= 1500, `停滿 1.5 秒才整理：${pasted[0].latencyMs} ms`);
   } finally {
     stt.close();
     chat.close();
@@ -421,11 +550,11 @@ test('整條管線：AI 失敗改貼原稿；AI 整理關著時一句一句貼',
     }
   };
   try {
-    const failed = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 } });
+    const failed = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 }, speed: { hedge: 1 } });
     assert.deepEqual(failed.filter((e) => e.type === 'pasted').map((e) => e.text), ['嗯第一句。第二句。']);
-    const off = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: false } });
+    const off = await run({ engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: false }, speed: { hedge: 1 } });
     assert.deepEqual(off.filter((e) => e.type === 'pasted').map((e) => e.text), ['嗯第一句。', '第二句。']);
-    assert.equal(chat.calls.length, 1);
+    assert.equal(chat.calls.length, 2);
   } finally {
     chat.close();
   }
@@ -463,7 +592,7 @@ test('整條管線：開了指令模式，AI 說是指令就走指令（測試�
     const events = await runListener(mkdtempSync(join(tmpdir(), 'voice-dictation-pipe-')), {
       engine: 'openai', openai: { apiKey: 'sk-test' }, ai: { enabled: true, provider: 'openai', segmentPauseMs: 1500 }, commands: true,
     }, { VOICE_DICTATION_OPENAI_HTTP_URL: `${stt.url}/v1/audio/transcriptions`, VOICE_DICTATION_OPENAI_CHAT_URL: `${chat.url}/chat` });
-    assert.deepEqual(events.filter((e) => e.type === 'command').map((e) => [e.goal, e.text]), [['打開台積電（2330）的個股頁', '台積電']]);
+    assert.deepEqual(events.filter((e) => e.type === 'command').map((e) => e.goal), ['打開台積電（2330）的個股頁']);
     assert.equal(events.filter((e) => e.type === 'pasted').length, 0);
     assert.match(chat.calls[0].body.messages[0].content, /- command：/);
   } finally {
@@ -472,59 +601,11 @@ test('整條管線：開了指令模式，AI 說是指令就走指令（測試�
   }
 });
 
-test('傳訊息給某人：填名字 → 點搜尋框下第一個含名字的結果 → 確認對話對象才寫 → 不送出；不對就停、不試下一個', async () => {
-  const win = { x: 0, y: 0, w: 1000, h: 800, title: 'LINE' };
-  const field = (value) => ({ handle: 2, role: 'AXTextField', subrole: '', label: '', value, x: 40, y: 50, w: 260, h: 30, focused: true });
-  const box = { handle: 3, role: 'AXTextArea', subrole: '', label: '', value: '', x: 340, y: 700, w: 600, h: 70, focused: false };
-  const ocr = (label, y) => ({ handle: 0, role: 'OCRText', subrole: '', label, value: '', x: 60, y, w: 80, h: 20, focused: false, ocr: true });
-  const header = (label) => ({ ...ocr(label, 20), x: 400 });
-  const run = async (answers) => {
-    let screen = 0;
-    const screens = [
-      { window: win, elements: [field(''), box, header('微波烤箱廢物食堂')] },
-      { window: win, elements: [field('BU'), box, header('微波烤箱廢物食堂'), ocr('bubu', 180), ocr('Bubu科技有限公司', 300)] },
-      { window: win, elements: [field('BU'), box, header('bubu'), ocr('bubu', 180), ocr('Bubu科技有限公司', 300)] },
-    ];
-    const acts = [];
-    const ax = {
-      async call(op, args) {
-        if (op === 'elements') return screens[Math.min(screen, screens.length - 1)];
-        if (op === 'act') { acts.push(args); screen += 1; return { result: 'ok' }; }
-        throw new Error(op);
-      },
-    };
-    let checks = 0;
-    const decider = { engine: () => 'Jev', canEscalate: () => false, async decide() { checks += 1; return { right: { noul: answers[Math.min(checks - 1, answers.length - 1)] } }; } };
-    const result = await runCommand({
-      ax, decider, log: () => {}, frontApp: async () => ({ pid: 9 }), openApp: async () => true,
-      goal: '打開和 BU 的對話，在訊息框寫好訊息（不送出）', text: 'BU', message: '你好', context: { app: 'LINE' },
-    });
-    return { result, acts };
-  };
-  // 一開始是群組（不對）→ 填名字 → 點第一個結果 bubu → 確認是 bubu → 寫
-  const ok = await run([0.1, 0.1, 0.9]);
-  assert.equal(ok.result.ok, true, ok.result.reason);
-  assert.deepEqual(ok.acts.map((a) => [a.action, a.text ?? '', a.y ?? '']), [['fill', 'BU', ''], ['clickAt', '', 190], ['fill', '你好', '']]);
-  assert.match(ok.result.steps.at(-1), /寫了「你好」（沒送出）/);
-  // 點了第一個結果還是不對：停，不寫、不去點 Bubu科技有限公司
-  const wrong = await run([0.1, 0.1, 0.2, 0.2, 0.2, 0.2]);
-  assert.equal(wrong.result.ok, false);
-  assert.match(wrong.result.reason, /第一個打開的不是和「BU」的對話，沒寫/);
-  assert.ok(!wrong.acts.some((a) => a.text === '你好'), '對象不對就不能寫');
-  assert.equal(wrong.acts.filter((a) => a.action === 'clickAt').length, 1, '只點第一個結果');
-});
-
 test('AI 拆出傳訊息的對象和內容', () => {
   const r = parseResult('{"mode":"command","text":"BU","goal":"打開和 BU 的對話","app":"LINE","message":"你好"}', { commands: true });
   assert.deepEqual(r, { mode: 'command', text: 'BU', goal: '打開和 BU 的對話', app: 'LINE', message: '你好' });
   const { system } = buildPrompt({ transcript: '幫我傳給 BU 說你好', commands: true });
   assert.match(system, /\(c\) 叫電腦幫忙傳訊息給某個人/);
-});
-
-test('指令模式的一步：選項是畫面上的元件，帶位置和角色', () => {
-  const q = stepQuestions([el(1, 'AXLink', '台積電 2330', 700)], { x: 0, y: 0, w: 1000, h: 800 });
-  assert.deepEqual(Object.keys(q.action.criteria), ['click', 'fill', 'enter', 'write', 'done', 'stuck']);
-  assert.equal(q.target.criteria.e0, '連結「台積電 2330」（下左）');
 });
 
 test('設定檢查 ai-check：照設定檔實際打 AI 和決策器；沒有 key 說缺什麼、結束碼 1', { timeout: 20_000 }, async () => {

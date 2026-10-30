@@ -2,9 +2,10 @@
 // 檢查 AI 整理和第三層決策設定好了沒：照設定檔實際打一次，印出用哪家、多快、整理結果。不印 key。
 // 用法：node ~/jarvis-voice/bin/ai-check.mjs   （有問題時結束碼是 1）
 
-import { aiKey, loadConfig } from './config.mjs';
-import { createDecider, intentQuestion } from './decide.mjs';
-import { DEFAULT_MODELS, PROVIDER_NAMES, editSegment } from './editor.mjs';
+import { CLEANUP_SAMPLE, COMMAND_SAMPLE, tryCleanup, tryDecider } from './checks.mjs';
+import { aiAvailable, aiKey, loadConfig } from './config.mjs';
+import { createDecider } from './decide.mjs';
+import { DEFAULT_MODELS, PROVIDER_NAMES } from './editor.mjs';
 
 const { config, error } = loadConfig();
 let ok = true;
@@ -16,18 +17,15 @@ const model = config.ai.models[provider] || DEFAULT_MODELS[provider];
 console.log(`AI 整理：${config.ai.enabled ? '開' : '關（從選單「AI 整理」選一家，或設定檔 ai.enabled 改成 true）'}，用 ${PROVIDER_NAMES[provider]}（${model}）`);
 
 const key = aiKey(config);
-if (!key) {
-  fail(`沒有 ${PROVIDER_NAMES[provider]} 的 key：設定檔 ai.keys.${provider}、ai.keyFiles.${provider} 或 ai.keyCommands.${provider} 擇一`);
+const ready = aiAvailable(config, provider);
+if (!ready && provider === 'cubelv') {
+  fail('還沒用 CubeLV 登入：從選單按「用 CubeLV 登入…」，或跑 node ~/jarvis-voice/bin/cubelv-login.mjs');
+} else if (!ready) {
+  fail(`沒有 ${PROVIDER_NAMES[provider]} 的 key：從選單「設定自己的 key…」貼上，或設定檔 ai.keys.${provider}、ai.keyFiles.${provider}、ai.keyCommands.${provider} 擇一`);
 } else {
-  const sample = '嗯那個我們明天三點開會，不對，四點開會，然後記得帶那個筆電';
   try {
-    const r = await editSegment({
-      provider, model, apiKey: key, timeoutMs: 15_000,
-      baseUrl: config.ai.baseUrls[provider], extraBody: config.ai.extraBody,
-      transcript: sample,
-      context: { app: 'Slack', field: { role: 'AXTextArea', label: '訊息' } }, vocabulary: config.openai.keywords,
-    });
-    console.log(`整理測試（${r.ms} ms）：「${sample}」→「${r.text}」`);
+    const r = await tryCleanup({ provider, model, apiKey: key, cubelvUrl: config.cubelv.apiUrl, baseUrl: config.ai.baseUrls[provider], extraBody: config.ai.extraBody, vocabulary: config.openai.keywords });
+    console.log(`整理測試（${r.ms} ms）：「${CLEANUP_SAMPLE}」→「${r.text}」`);
   } catch (err) {
     fail(`整理測試失敗：${err.message}`);
   }
@@ -37,16 +35,15 @@ console.log(`自動找輸入框：${config.autoFocus ? '開' : '關'}；語音�
 if (config.autoFocus || config.commands) {
   const decider = createDecider(() => ({
     jevKey: config.jev.apiKey, jevModel: config.jev.model,
-    ai: key ? { provider, model: config.ai.models[provider] || '', apiKey: key, baseUrl: config.ai.baseUrls[provider], extraBody: config.ai.extraBody } : null,
+    ai: ready ? { provider, model: config.ai.models[provider] || '', apiKey: key, baseUrl: config.ai.baseUrls[provider], extraBody: config.ai.extraBody, cubelvUrl: config.cubelv.apiUrl } : null,
   }));
   if (!decider.available()) {
-    fail('第三層沒有決策器：要有 Jev key（jev.apiKey／apiKeyFile／apiKeyCommand），或 AI 整理那家的 key');
+    fail('第三層沒有決策器：要有 Jev key（選單「設定自己的 key…」，或 jev.apiKey／apiKeyFile／apiKeyCommand），或 AI 整理那家的 key（或用 CubeLV 登入）');
   } else {
-    const started = Date.now();
     try {
-      const a = await decider.decide({ transcript: '進到台積電的個股頁', app: '看盤', window: '自選股', field: '' }, { intent: intentQuestion() });
-      console.log(`第三層決策（${decider.engine()}，${Date.now() - started} ms）：「進到台積電的個股頁」判成 ${a.intent?.choice === 'command' ? '指令' : a.intent?.choice === 'dictation' ? '要打的字' : '（沒回答）'}`);
-      if (a.intent?.choice !== 'command') fail('判斷不對：這句應該是指令');
+      const a = await tryDecider(decider);
+      console.log(`第三層決策（${a.engine}，${a.ms} ms）：「${COMMAND_SAMPLE}」判成 ${a.choice === 'command' ? '指令' : a.choice === 'dictation' ? '要打的字' : '（沒回答）'}`);
+      if (a.choice !== 'command') fail('判斷不對：這句應該是指令');
     } catch (err) {
       fail(`第三層決策失敗：${err.message}`);
     }

@@ -78,6 +78,16 @@ if [[ "$ENGINE" == local ]]; then
   fi
 fi
 
+# 「只聽我的聲音」用的聲紋模型（CAM++ 中文，約 28 MB）：不論哪個引擎都裝，選單開了才會用
+SPEAKER_MODEL="$STATE/models/speaker/campplus_zh.onnx"
+if [[ ! -f "$SPEAKER_MODEL" ]]; then
+  say "下載聲紋模型 CAM++（約 28 MB，來源 k2-fsa/sherpa-onnx）"
+  mkdir -p "$STATE/models/speaker"
+  curl -fL --retry 3 --progress-bar -o "$SPEAKER_MODEL.part" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx" \
+    && mv "$SPEAKER_MODEL.part" "$SPEAKER_MODEL" || say "聲紋模型沒下載成功（之後重跑 install.sh 再裝）；「只聽我的聲音」先不能用"
+fi
+
 say "設定檔：${CONFIG}（引擎 ${ENGINE}）"
 node - "$CONFIG" "$ENGINE" <<'EOF'
 const fs = require('fs');
@@ -93,8 +103,8 @@ if (engine === 'openai' && process.env.OPENAI_API_KEY && !config.openai?.apiKey 
 fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 fs.chmodSync(file, 0o600);
 EOF
-if [[ "$ENGINE" == openai ]] && ! grep -q '"apiKey": "sk-\|"apiKeyFile"' "$CONFIG" && [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  note "還沒有 OpenAI key：在 $CONFIG 的 openai 裡加上 \"apiKey\": \"sk-...\"，或 \"apiKeyFile\": \"放 key 的檔案路徑\""
+if [[ "$ENGINE" == openai ]] && ! grep -q '"apiKey": "sk-\|"apiKeyFile"' "$CONFIG" && ! grep -qs '"openai"' "$STATE/own-keys.json" && [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  note "還沒有 OpenAI key：裝好後點選單列的 JarvisVoice →「設定自己的 key…」選 OpenAI 貼上；或在 $CONFIG 的 openai 裡加上 \"apiKeyFile\": \"放 key 的檔案路徑\""
 fi
 
 # 舊版註冊在 Claude Code 的 plugin 拿掉
@@ -114,15 +124,17 @@ for OLD in "$HOME/Applications/全語音輸入.app" "$HOME/Applications/語音�
   fi
 done
 pkill -f "$APP/Contents/MacOS/applet" 2>/dev/null || true
-# 小程式本身沒變就不重包：重包會換簽名，麥克風與輔助使用權限得重新允許
+# 小程式本身沒變就不重包：沒有開發者憑證時是本機簽名，重包會換簽名，麥克風與輔助使用權限得重新允許
 STAMP="$(printf '%s\n%s\n%s\n%s\n' "$(shasum -a 256 "$DIR/app/main.js" "$DIR/app/build.sh" | cut -d' ' -f1 | tr '\n' ' ')" "$NODE" "$DIR" "$STATE" | shasum -a 256 | cut -d' ' -f1)"
 if [[ -f "$APP/Contents/Resources/build-stamp" && "$(cat "$APP/Contents/Resources/build-stamp")" == "$STAMP" ]]; then
   note "沒有變動，沿用原本的 app（權限不用重給）"
 else
-  "$DIR/app/build.sh" "$APP" "$DIR" "$NODE" "$STATE"
-  echo "$STAMP" > "$APP/Contents/Resources/build-stamp"
-  codesign --force --deep --sign - "$APP" >/dev/null 2>&1
-  note "已包好（第一次用或小程式有更新時，系統會再問一次權限）"
+  BUILD_STAMP="$STAMP" "$DIR/app/build.sh" "$APP" "$DIR" "$NODE" "$STATE"
+  if codesign -dv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+    note "已包好（本機簽名：第一次用或小程式有更新時，系統會再問一次權限）"
+  else
+    note "已包好（開發者憑證簽名：權限給過一次，之後重包不用重給）"
+  fi
 fi
 
 mkdir -p "$(dirname "$AGENT")"

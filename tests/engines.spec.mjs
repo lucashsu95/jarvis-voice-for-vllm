@@ -210,6 +210,61 @@ test('OpenAI 一般轉寫：轉出空字串也照順序交出去（listen 會記
   }
 });
 
+test('OpenAI 一般轉寫：停 0.4 秒先送（speculate），切句時直接用那份；又開口作廢就整句重送；先送的失敗也整句重送', async () => {
+  const server = await fakeTranscriptions((call) => (call.bytes.length === 44 + 24000 ? { body: { text: '先送的' } } : { body: { text: `整句 ${call.bytes.length - 44}` } }));
+  try {
+    const got = [];
+    const engine = createBatchEngine({ apiKey: 'sk-test', onFinal: (text, info) => got.push([text, info.early, info.turn]), onError: () => {}, log: () => {} });
+    engine.append(speech(0.5, 1));
+    assert.equal(engine.speculate(), true);
+    assert.equal(engine.busy(), false); // 還沒 commit 不算在轉
+    engine.append(speech(0.45, 0)); // 後面只有靜音
+    engine.commit({ turn: 1 });
+    await waitFor(() => got.length === 1);
+    assert.deepEqual(got[0], ['先送的', true, 1]);
+    assert.equal(server.calls.length, 1);
+
+    engine.append(speech(0.5, 1));
+    engine.speculate();
+    assert.equal(engine.discard(), true); // 又開口了
+    engine.append(speech(0.5, 2));
+    engine.commit({ turn: 2 });
+    await waitFor(() => got.length === 2);
+    assert.deepEqual(got[1], ['整句 48000', false, 2]);
+  } finally {
+    server.close();
+  }
+  const flaky = await fakeTranscriptions((call, n) => (n === 1 ? { status: 500, body: { error: { message: 'boom' } } } : { body: { text: '重送成功' } }));
+  try {
+    const got = [];
+    const engine = createBatchEngine({ apiKey: 'sk-test', onFinal: (text, info) => got.push([text, info.early]), onError: () => {}, log: () => {} });
+    engine.append(speech(0.5, 1));
+    engine.speculate();
+    await new Promise((r) => setTimeout(r, 50));
+    engine.commit();
+    await waitFor(() => got.length === 1);
+    assert.deepEqual(got[0], ['重送成功', false]);
+  } finally {
+    flaky.close();
+  }
+});
+
+test('OpenAI 一般轉寫：hedge 2 同時送兩份，誰先回用誰（慢的那份不用等）', async () => {
+  const server = await fakeTranscriptions((call, n) => (n === 1 ? { body: { text: '慢的' }, delay: 1500 } : { body: { text: '快的' }, delay: 20 }));
+  try {
+    const got = [];
+    const engine = createBatchEngine({ apiKey: 'sk-test', hedge: 2, onFinal: (text, info) => got.push([text, info.ms]), onError: () => {}, log: () => {} });
+    engine.append(speech(0.5, 1));
+    engine.commit();
+    await waitFor(() => got.length === 1);
+    assert.equal(server.calls.length, 2);
+    assert.equal(got[0][0], '快的');
+    assert.ok(got[0][1] < 1000, `不用等慢的那份：${got[0][1]} ms`);
+  } finally {
+    server.close();
+  }
+});
+
 test('OpenAI 直連：帶自己的 key、先送 session 設定，再送音訊與 commit，收到定稿', async () => {
   const wss = new WebSocketServer({ port: 0 });
   const seen = { auth: '', first: null, appends: 0 };

@@ -1,9 +1,10 @@
-// 雲端即時轉寫：OpenAI Realtime 的 transcription 連線（openai 直連，或經平行沙盒 control 轉送）。
+// 雲端即時轉寫：OpenAI Realtime 的 transcription 連線（openai 直連，或經 CubeLV 後端、平行沙盒 control 轉送）。
 // 連線、送音、重連補送都在核心（core/transcription.mjs，跟 CubeLV、平行沙盒同一份）；這裡只接 Mac 小程式的介面：
 // listen.mjs 本機斷句，講話中 append、講完一句 commit，拿到一句的字就 onFinal。
 // 整天開著：有聲音才連，安靜夠久、連線快到 10 分鐘上限時先關（housekeeping）。
 
 import { createTranscriber, permanentError } from '../../core/transcription.mjs';
+import { CubeLVError, cubelvSession } from '../cubelv.mjs';
 
 // 放棄之後（連線一直被拒、key 錯）隔這麼久才再試
 const RETRY_AFTER_FAIL_MS = 5000;
@@ -36,6 +37,12 @@ export function createRealtimeEngine({ connector, onFinal, onError, log }) {
       if (!t) { log('轉寫連線剛失敗，這句沒送'); return; }
       t.commit({ startMs: 0, endMs: 0 });
     },
+    // 這句不要（聲紋不像使用者）：聲音已經串流出去了，照樣 commit 讓連線的緩衝清掉，回來的字丟掉
+    skip() {
+      const t = current();
+      if (!t) return;
+      t.discard(t.commit({ startMs: 0, endMs: 0 }));
+    },
     flush() { transcriber?.flush(); },
     busy: () => !!transcriber && !transcriber.failed && transcriber.busy(),
     // 每輪主迴圈呼叫：安靜夠久、或連線快到 10 分鐘上限時先關
@@ -47,7 +54,7 @@ export function createRealtimeEngine({ connector, onFinal, onError, log }) {
 // OpenAI 直連：跟平行沙盒 control 送給 OpenAI 的設定一樣（internal/boxes/transcription.go 的 sessionUpdate）。
 export function openaiConnector({ apiKey, model = 'gpt-live-transcribe', languages = [] }) {
   return async () => {
-    if (!apiKey) throw permanentError('沒有 OpenAI API key（設定檔 openai.apiKey 或環境變數 OPENAI_API_KEY）');
+    if (!apiKey) throw permanentError('沒有 OpenAI API key：從選單「設定自己的 key…」貼上（或設定檔 openai.apiKey、環境變數 OPENAI_API_KEY）');
     const transcription = { model, delay: 'low' };
     if (languages.length) transcription.languages = languages;
     return {
@@ -61,6 +68,19 @@ export function openaiConnector({ apiKey, model = 'gpt-live-transcribe', languag
         },
       },
     };
+  };
+}
+
+// CubeLV（用 CubeLV 登入）：先確認登入與點數（/voice/check，60 秒內問過不再問），再帶 token header 連 CubeLV 的 /ws/transcription；
+// session 設定由後端送，逐字稿後端已轉台灣正體，照錄音分鐘數扣點。沒登入、登入失效、點數不足都直接放棄並說明（重試也沒用）。
+export function cubelvConnector({ apiUrl, language = '' }) {
+  return async () => {
+    try {
+      return await cubelvSession(apiUrl).transcriptionTarget({ language });
+    } catch (err) {
+      if (err instanceof CubeLVError) throw permanentError(err.message);
+      throw err;
+    }
   };
 }
 

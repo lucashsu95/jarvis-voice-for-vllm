@@ -48,6 +48,25 @@ function run(argv) {
   for (const v of [search, single, secret, scroll, note]) view.addSubview(v);
   win.makeKeyAndOrderFront($());
   win.makeFirstResponder(argv.includes('--focus-none') ? $() : text);
+  // --blur-on <檔案>：那個檔案一出現就把焦點從文字框拿掉（測「開口時在框裡、要貼的時候焦點跑掉」）
+  const blurAt = argv.indexOf('--blur-on');
+  if (blurAt >= 0) {
+    const path = argv[blurAt + 1];
+    ObjC.registerSubclass({
+      name: 'JarvisTestBlur',
+      methods: {
+        'tick:': {
+          types: ['void', ['id']],
+          implementation(timer) {
+            if (!$.NSFileManager.defaultManager.fileExistsAtPath($(path))) return;
+            win.makeFirstResponder($());
+            timer.invalidate;
+          },
+        },
+      },
+    });
+    $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.1, $.JarvisTestBlur.alloc.init, 'tick:', $(), true);
+  }
   if (argv.includes('--activate')) app.activateIgnoringOtherApps(true);
   app.finishLaunching;
   app.run;
