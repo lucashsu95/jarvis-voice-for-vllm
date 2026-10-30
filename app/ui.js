@@ -876,6 +876,115 @@ function fadeBubble() {
   bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.3, controller, 'bubbleHide:', $(), false);
 }
 
+// ── 操作代理的發光（glow 事件）：看得出代理正在動你的電腦、下一步要碰哪裡 ──
+// on：整個畫面邊框亮＋游標旁一圈光（跟著滑鼠），一直到 off；target：要點、填字的那個東西亮框框（frame 是左上角原點的螢幕座標）。
+// 藍色 #0091FF；都是點穿過去、不搶焦點的浮動視窗，跟小框同一種
+ObjC.import('QuartzCore');
+const GLOW_RGB = [0, 145 / 255, 1]; // #0091FF
+const GLOW_CURSOR = 48;
+const GLOW_TARGET_PAD = 12;
+const GLOW_TARGET_S = 1.2;
+let glowEdges = [];
+let glowCursor = null;
+let glowFollowTimer = null;
+let glowTarget = null;
+let glowTargetTimer = null;
+
+function glowPanel(x, y, w, h) {
+  const panel = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(x, y, w, h), 1 << 7, 2, false);
+  panel.setFloatingPanel(true);
+  panel.setLevel(101);
+  panel.setOpaque(false);
+  panel.setBackgroundColor($.NSColor.clearColor);
+  panel.setHasShadow(false);
+  panel.setIgnoresMouseEvents(true);
+  panel.setHidesOnDeactivate(false);
+  panel.setCollectionBehavior((1 << 0) | (1 << 4) | (1 << 6) | (1 << 8));
+  const view = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, w, h));
+  view.setWantsLayer(true);
+  panel.setContentView(view);
+  return panel;
+}
+
+// 外框加同色的陰影＝發光；pad：框框離視窗邊多遠（陰影要有地方畫）；pulse：一亮一暗（最暗留 55%，太淡看不出來）
+function glowRing(panel, { pad, width, radius, shadow, pulse }) {
+  const color = $.NSColor.colorWithSRGBRedGreenBlueAlpha(GLOW_RGB[0], GLOW_RGB[1], GLOW_RGB[2], 1).CGColor;
+  const size = panel.frame.size;
+  const ring = $.CALayer.layer;
+  ring.setFrame($.NSMakeRect(pad, pad, size.width - pad * 2, size.height - pad * 2));
+  ring.setBorderWidth(width);
+  ring.setBorderColor(color);
+  ring.setCornerRadius(radius);
+  ring.setShadowColor(color);
+  ring.setShadowOpacity(1);
+  ring.setShadowRadius(shadow);
+  ring.setShadowOffset($.NSMakeSize(0, 0));
+  if (pulse) {
+    const anim = $.CABasicAnimation.animationWithKeyPath('opacity');
+    anim.setFromValue($.NSNumber.numberWithDouble(1));
+    anim.setToValue($.NSNumber.numberWithDouble(0.55));
+    anim.setDuration(0.9);
+    anim.setAutoreverses(true);
+    anim.setRepeatCount(1e9);
+    ring.addAnimationForKey(anim, 'pulse');
+  }
+  panel.contentView.layer.addSublayer(ring);
+}
+
+function glowOn() {
+  if (glowEdges.length) return;
+  const screens = $.NSScreen.screens;
+  for (let i = 0; i < screens.count; i += 1) {
+    const f = screens.objectAtIndex(i).frame;
+    const edge = glowPanel(f.origin.x, f.origin.y, f.size.width, f.size.height);
+    glowRing(edge, { pad: 0, width: 6, radius: 0, shadow: 14, pulse: true });
+    edge.orderFrontRegardless;
+    glowEdges.push(edge);
+  }
+  glowCursor = glowPanel(0, 0, GLOW_CURSOR, GLOW_CURSOR);
+  glowRing(glowCursor, { pad: 8, width: 3, radius: (GLOW_CURSOR - 16) / 2, shadow: 6, pulse: true });
+  glowFollow();
+  glowCursor.orderFrontRegardless;
+  glowFollowTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.03, controller, 'glowFollow:', $(), true);
+}
+
+// 游標旁的光圈跟著滑鼠（NSEvent 的座標就是 Cocoa 的左下角原點）
+function glowFollow() {
+  if (!glowCursor) return;
+  const p = $.NSEvent.mouseLocation;
+  glowCursor.setFrameOrigin($.NSMakePoint(p.x - GLOW_CURSOR / 2, p.y - GLOW_CURSOR / 2));
+}
+
+function glowShowTarget(frame) {
+  glowHideTarget();
+  if (!frame || !(frame.w > 0) || !(frame.h > 0)) return;
+  const fullH = $.NSScreen.screens.objectAtIndex(0).frame.size.height;
+  const pad = GLOW_TARGET_PAD;
+  glowTarget = glowPanel(frame.x - pad, fullH - (frame.y + frame.h) - pad, frame.w + pad * 2, frame.h + pad * 2);
+  glowRing(glowTarget, { pad, width: 3, radius: 6, shadow: 10, pulse: false });
+  glowTarget.orderFrontRegardless;
+  glowTargetTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(GLOW_TARGET_S, controller, 'glowTargetHide:', $(), false);
+}
+
+function glowHideTarget() {
+  if (glowTargetTimer) { glowTargetTimer.invalidate; glowTargetTimer = null; }
+  if (glowTarget) { glowTarget.orderOut($()); glowTarget = null; }
+}
+
+function glowOff() {
+  glowHideTarget();
+  if (glowFollowTimer) { glowFollowTimer.invalidate; glowFollowTimer = null; }
+  if (glowCursor) { glowCursor.orderOut($()); glowCursor = null; }
+  for (const edge of glowEdges) edge.orderOut($());
+  glowEdges = [];
+}
+
+function showGlow(e) {
+  if (e.state === 'on') glowOn();
+  else if (e.state === 'target') glowShowTarget(e.frame);
+  else glowOff();
+}
+
 function onLine(line) {
   let event;
   try { event = JSON.parse(line); } catch { return; }
@@ -887,9 +996,12 @@ function onLine(line) {
     view = { state: event.state, message: event.message || '', engine: event.engine || view.engine };
     if (view.state !== 'listening') { hearing = false; working = false; }
     if (view.state !== 'listening' && view.state !== 'error') hideBubble();
+    if (view.state !== 'listening') glowOff(); // 暫停、出錯：代理會停，光也收掉
     refresh();
   } else if (event.type === 'bubble') {
     showBubble(event);
+  } else if (event.type === 'glow') {
+    showGlow(event);
   } else if (event.type === 'hud') {
     // 常駐程式的即時狀態：hearing／listening（有沒有聽到人聲）、level:<0–1>（說話中的音量）、
     // working／idle（辨識中開始、結束）、pasted、nofield
@@ -1028,6 +1140,8 @@ ObjC.registerSubclass({
     'animate:': { types: ['void', ['id']], implementation() { refresh(); } },
     'bubbleFade:': { types: ['void', ['id']], implementation() { fadeBubble(); } },
     'bubbleHide:': { types: ['void', ['id']], implementation() { bubbleTimer = null; hideBubble(); } },
+    'glowFollow:': { types: ['void', ['id']], implementation() { glowFollow(); } },
+    'glowTargetHide:': { types: ['void', ['id']], implementation() { glowTargetTimer = null; glowHideTarget(); } },
   },
 });
 

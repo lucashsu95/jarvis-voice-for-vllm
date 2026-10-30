@@ -293,6 +293,32 @@ test('Mac 操作代理接頭：滑鼠指著的東西（包含那一點、面積�
   assert.doesNotMatch((await screen.snapshot()).text, /滑鼠指著/, '動手之後畫面變了，同一個位置不一定是他指的');
 });
 
+test('Mac 操作代理接頭：點、填字之前先把要碰的東西的範圍交給 onTarget（發光），動手在後；捲動不亮', async () => {
+  const order = [];
+  const ax = {
+    async call(op, args) {
+      if (op === 'tree') {
+        return {
+          app: 'Google Chrome', window: { title: '新分頁', x: 0, y: 0, w: 800, h: 600 }, menus: [], partial: false, seen: 1, treeMs: 1, ms: 1,
+          nodes: [ctl(1, 'AXLink', 'Youtube', { x: 100, y: 100, w: 112, h: 112 }), ctl(2, 'AXTextField', '搜尋', { x: 10, y: 10, w: 200, h: 24 })],
+        };
+      }
+      order.push(`act:${args.action}`);
+      return { result: 'ok' };
+    },
+  };
+  const screen = createMacAgentScreen({ ax, frontApp: async () => ({ pid: 42 }), openApp: async () => true, onTarget: (frame) => order.push(frame) });
+  await screen.snapshot();
+  await screen.run({ tool: 'click', args: { ref: 'e1' } });
+  await screen.run({ tool: 'fill', args: { ref: 'e2', text: '台積電' } });
+  await screen.run({ tool: 'scroll', args: { direction: 'down' } });
+  assert.deepEqual(order, [
+    { x: 100, y: 100, w: 112, h: 112 }, 'act:press',
+    { x: 10, y: 10, w: 200, h: 24 }, 'act:fill',
+    'act:scroll',
+  ]);
+});
+
 // 假的 AX 小幫手：tree 照 page 回，act 記下來、照劇本換頁
 function fakeAx(pages, start, onAct) {
   let page = start;

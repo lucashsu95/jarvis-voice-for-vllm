@@ -25,6 +25,8 @@ const GROUP_SUBROLE_NAMES = {
 const FIELDS = ['AXTextField', 'AXSearchField', 'AXTextArea', 'AXComboBox'];
 const SETTLE_MS = 500;
 const OPEN_SETTLE_MS = 1200; // 切換 app、打開網址之後等視窗出來
+const TARGET_MS = 500; // 要碰的東西先亮多久才動手
+const TARGET_TOOLS = ['click', 'right_click', 'fill', 'select', 'press_key'];
 
 export const MAC_TOOLS = [
   ...standardTools(['click', 'fill']),
@@ -103,7 +105,7 @@ export function treeNodes(res, pointed = null) {
       const name = n.name || (FIELDS.includes(n.role) || seen.length < 2 ? '' : seen);
       nodes.push({
         depth, kind: 'control', role: roleName(n), name, value: n.value, states: n === pointed ? [...statesOf(n), '滑鼠指著'] : statesOf(n), off: !!n.off,
-        target: { handle: n.handle, field: FIELDS.includes(n.role) },
+        target: { handle: n.handle, field: FIELDS.includes(n.role), ...(n.w > 0 && n.h > 0 ? { frame: { x: n.x, y: n.y, w: n.w, h: n.h } } : {}) },
       });
     }
   }
@@ -145,8 +147,9 @@ const pathOf = (raw) => (Array.isArray(raw) ? raw : String(raw ?? '').split(/\s*
 
 // ax：bin/ax.mjs 的 createAx()；frontApp() → { pid }（每一步看最前面的那個 app，切到別的 app 就跟著看它）；
 // openApp(name) → 有沒有打開；openUrl(url) → 有沒有打開；
-// pointer：使用者講話時滑鼠在螢幕上的位置 { x, y }，只標在第一次讀的畫面上（動手之後畫面變了，同一個位置就不是他指的東西）
-export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultOpenUrl, log = () => {}, maxNodes, budgetMs, pointer = null }) {
+// pointer：使用者講話時滑鼠在螢幕上的位置 { x, y }，只標在第一次讀的畫面上（動手之後畫面變了，同一個位置就不是他指的東西）；
+// onTarget(frame)：要點、填字、選、按鍵的那個東西在螢幕上的範圍（左上角原點），通知完等 TARGET_MS 才動手，讓人看得到下一步要碰哪裡
+export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultOpenUrl, log = () => {}, maxNodes, budgetMs, pointer = null, onTarget = null }) {
   let pid = 0;
   let reads = 0;
   const call = (op, args, timeoutMs) => ax.call(op, { pid, ...args }, timeoutMs).catch((err) => { log(`AX 小幫手 ${op} 失敗：${err.message}`); return null; });
@@ -176,6 +179,11 @@ export function createMacAgentScreen({ ax, frontApp, openApp, openUrl = defaultO
     async act(call_, target) {
       const args = call_.args ?? {};
       const ref = args.ref != null ? String(args.ref) : '';
+      if (onTarget && target && TARGET_TOOLS.includes(call_.tool)) {
+        // 截圖認出來的字只有一個點：亮那個點附近
+        const frame = target.frame ?? (target.at ? { x: target.at.x - 30, y: target.at.y - 12, w: 60, h: 24 } : null);
+        if (frame) { onTarget(frame); await sleep(TARGET_MS); }
+      }
       switch (call_.tool) {
         case 'click':
         case 'right_click': {

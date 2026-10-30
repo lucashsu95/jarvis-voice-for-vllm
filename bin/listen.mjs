@@ -911,9 +911,11 @@ async function runVoiceCommand(result, raw, front, ctx) {
   const pointer = await axCall('mouse', {}, 2000);
   const ai = service(aiSettings());
   let outcome;
+  // 做事中發光（app/ui.js）：畫面邊框和游標旁亮著；每一步要碰的東西先亮框框
+  emit({ type: 'glow', state: 'on' });
   try {
     outcome = await runAgent({
-      screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer }),
+      screen: createMacAgentScreen({ ax, frontApp, openApp, log, pointer, onTarget: (frame) => emit({ type: 'glow', state: 'target', frame }) }),
       complete: (req) => ai.complete(req),
       goal,
       said: raw,
@@ -925,6 +927,8 @@ async function runVoiceCommand(result, raw, front, ctx) {
     });
   } catch (err) {
     outcome = { ok: false, reason: err.message, steps: [] };
+  } finally {
+    emit({ type: 'glow', state: 'off' });
   }
   ctxCache = null;
   const steps = outcome.steps ?? [];
