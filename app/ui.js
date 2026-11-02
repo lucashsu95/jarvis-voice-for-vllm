@@ -776,30 +776,33 @@ function mascotUpdate(e, level = 0) {
       size, size
     ), true);
   }
-  // 顯示（淡入）
+  // 顯示（淡入）+ 定位到滑鼠旁
   if (!mascotVisible) {
+    const mouse = $.NSEvent.mouseLocation;
+    const px = mouse.x + 14;
+    const py = mouse.y - size - 10;
+    mascotPanel.setFrameDisplay($.NSMakeRect(px, py, size, size), true);
     mascotPanel.setAlphaValue(0);
     mascotPanel.orderFrontRegardless;
     mascotPanel.animator.setAlphaValue(1);
     mascotVisible = true;
   }
-  // 說話中：啟動 bounce timer（每 0.1 秒重畫）
-  if (expr === 'hearing') {
-    if (!mascotTimer) {
-      mascotTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.1, controller, 'mascotTick:', $(), true);
-    }
-  } else {
-    if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
+  // 追蹤滑鼠：只要球球可见就持續跟（每 0.05 秒）
+  if (!mascotTimer) {
+    mascotTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.05, controller, 'mascotTrack:', $(), true);
   }
 }
 
-function mascotTick() {
+function mascotTrack() {
   if (!mascotPanel || !mascotVisible) return;
-  if (mascotExpr !== 'hearing') return;
-  // 用目前的 level 重畫（bounce）
-  const size = MASCOT_SIZE[mascot.size] || 34;
-  const img = mascotImage('hearing', level);
-  mascotPanel.contentView.setImage(img);
+  const size = MASCOT_SIZE[mascot.size] || 48;
+  const mouse = $.NSEvent.mouseLocation;
+  const x = mouse.x + 14;
+  const y = mouse.y - size - 10;
+  mascotPanel.setFrameDisplay($.NSMakeRect(x, y, size, size), true);
+  if (mascotExpr === 'hearing') {
+    mascotPanel.contentView.setImage(mascotImage('hearing', level));
+  }
 }
 
 function openInTextEdit(path) {
@@ -997,9 +1000,8 @@ function showBubble(e) {
   bubbleVisible = true;
   if (bubbleTimer) { bubbleTimer.invalidate; bubbleTimer = null; }
   bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(e.holdMs ? e.holdMs / 1000 : BUBBLE_IDLE_S, controller, 'bubbleFade:', $(), false);
-  // 球球：跟著小框走
+  // 球球：跟著滑鼠走
   if (mascot.on) {
-    placeMascot(bubblePanel.frame);
     mascotUpdate(e, level);
   }
 }
