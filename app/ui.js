@@ -1102,155 +1102,75 @@ function mascotImage(expr, level = 0) {
   img.lockFocus;
   const cx = size / 2;
   const cy = size / 2;
-  const r = size / 2 - 4.5;
+  const r = size / 2 - 4;
   const hearing = (expr === 'hearing');
-  const bounce = hearing ? Math.round(level * 3) : 0;
+  const bounce = hearing ? Math.round(level * 3) : (expr === 'happy' ? 1 : 0);
   const ballY = cy + bounce;
-  // squash & stretch（只限 hearing）：落點寬扁、峰值高瘦
-  const bodyRx = hearing ? r * (1 + (1 - level) * 0.08 - level * 0.05) : r;
-  const bodyRy = hearing ? r * (1 - (1 - level) * 0.08 + level * 0.05) : r;
 
-  // 球體：品牌藍 #0091FF
-  const body = $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - bodyRx, ballY - bodyRy, bodyRx * 2, bodyRy * 2));
-  $.NSColor.colorWithSRGBRedGreenBlueAlpha(0, 145 / 255, 1, 0.85).set;
-  body.fill;
+  // 卵石形身體：略扁的橢圓（寬 > 高），深色磨砂
+  const flat = 0.88; // 扁平比
+  const bodyRx = r;
+  const bodyRy = hearing ? r * flat * (1 + (1 - level) * 0.06 - level * 0.04) : r * flat;
+  const bodyW = bodyRx * 2;
+  const bodyH = bodyRy * 2;
 
-  // 球體內兩段陰影（clip 到球內）：上 60% 淺藍圓頂 + 下 30% 暗色月牙 → 3D 球體感
-  $.NSGraphicsContext.saveGraphicsState;
-  body.setClip;
-  $.NSColor.colorWithSRGBRedGreenBlueAlpha(60 / 255, 180 / 255, 1, 0.35).set;
-  $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - bodyRx * 1.2, ballY + bodyRy * 0.2, bodyRx * 2.4, bodyRy * 0.8)).fill;
-  $.NSColor.colorWithSRGBRedGreenBlueAlpha(0, 80 / 255, 200 / 255, 0.15).set;
-  $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - bodyRx * 1.2, ballY - bodyRy * 1.1, bodyRx * 2.4, bodyRy * 0.7)).fill;
-  $.NSGraphicsContext.restoreGraphicsState;
+  // 深色卵石：接近黑的深藍
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(15 / 255, 20 / 255, 35 / 255, 1).set;
+  const bodyPath = $.NSBezierPath.bezierPathWithOvalInRect(
+    $.NSMakeRect(cx - bodyRx, ballY - bodyRy, bodyW, bodyH)
+  );
+  bodyPath.fill;
 
-  // 鏡面高光：左上角小亮白橢圓（約半徑 25%）
-  $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 1, 1, 0.4).set;
-  const specRx = bodyRx * 0.25;
-  const specRy = bodyRy * 0.18;
-  $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - bodyRx * 0.40 - specRx, ballY + bodyRy * 0.45 - specRy, specRx * 2, specRy * 2)).fill;
+  // 極淡的頂部形體提示（0.08 alpha，幾乎看不出來）
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(50 / 255, 60 / 255, 80 / 255, 0.08).set;
+  $.NSBezierPath.bezierPathWithOvalInRect(
+    $.NSMakeRect(cx - bodyRx * 0.8, ballY + bodyRy * 0.15, bodyW * 0.8, bodyH * 0.5)
+  ).fill;
 
-  // 眼睛（依表情變化）
-  const eyeR = r * 0.22;
-  const eyeGap = r * 0.42;
-  const eyeY = ballY + r * 0.15;
-  const darkColor = $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 1);
-  const drawEyeHighlight = function (ex, ey, er) {
-    $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 1, 1, 0.9).set;
-    const hr = er * 0.3;
-    $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(ex + er * 0.3 - hr, ey + er * 0.3 - hr, hr * 2, hr * 2)).fill;
+  // 白色膠囊眼睛（唯一的臉部特徵）
+  const white = $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 1, 1, 1);
+  const baseEw = r * 0.30;
+  const baseEh = r * 0.20;
+  const eyeGap = r * 0.38;
+  const eyeBaseY = ballY + r * 0.08;
+
+  let ew = baseEw;
+  let eh = baseEh;
+  let eyeLift = 0;
+  let tiltDiff = 0; // 右眼比左眼高的像素（>0 = 往上看，<0 = 往下看）
+
+  if (expr === 'hearing') {
+    eh = baseEh * (1 + level * 0.3);
+  } else if (expr === 'working') {
+    ew = baseEw * 0.85;
+    eyeLift = 3;
+    tiltDiff = 1;
+  } else if (expr === 'happy') {
+    eh = baseEh * 0.30;
+    ew = baseEw * 1.10;
+    eyeLift = 1;
+  } else if (expr === 'sad') {
+    ew = baseEw * 0.85;
+    eh = baseEh * 0.80;
+    eyeLift = -3;
+    tiltDiff = -1;
+  } else {
+    // 預設：右眼微高 1px（往右上看）
+    tiltDiff = 1;
+  }
+
+  const leftEyeY = eyeBaseY + eyeLift;
+  const rightEyeY = eyeBaseY + eyeLift + tiltDiff;
+
+  const drawCapsule = function (ex, ey, w, h) {
+    const rad = h / 2;
+    const rect = $.NSMakeRect(ex - w / 2, ey - h / 2, w, h);
+    white.set;
+    $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius(rect, rad, rad).fill;
   };
 
-  if (expr === 'happy') {
-    // 開心閉眼：兩條 ∩ 型弧線（y-up 座標下上弧 = 30°–150°），比舊版更大更彎
-    darkColor.set;
-    for (const dx of [-eyeGap, eyeGap]) {
-      const path = $.NSBezierPath.bezierPath;
-      path.setLineWidth(2);
-      path.setLineCapStyle(1);
-      path.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
-        $.NSMakePoint(cx + dx, eyeY), eyeR * 1.2, 30, 150, false
-      );
-      path.stroke;
-    }
-    // 紅暈
-    $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 100 / 255, 120 / 255, 0.35).set;
-    for (const dx of [-eyeGap * 1.3, eyeGap * 1.3]) {
-      $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx + dx - 2, eyeY - eyeR * 1.5 - 1.5, 4, 3)).fill;
-    }
-    // 溫柔微笑（眼下 ∪ 型弧線；y-up 座標下下弧 = 200°–340°）
-    darkColor.set;
-    const smile = $.NSBezierPath.bezierPath;
-    smile.setLineWidth(2);
-    smile.setLineCapStyle(1);
-    smile.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
-      $.NSMakePoint(cx, eyeY - eyeR * 1.5), eyeR * 1.5, 200, 340, false
-    );
-    smile.stroke;
-    // 小閃光（兩條交叉短線）
-    $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 1, 1, 0.6).set;
-    const sparkle = function (sx, sy, len) {
-      const sp = $.NSBezierPath.bezierPath;
-      sp.setLineWidth(1);
-      sp.moveToPoint($.NSMakePoint(sx - len / 2, sy));
-      sp.lineToPoint($.NSMakePoint(sx + len / 2, sy));
-      sp.moveToPoint($.NSMakePoint(sx, sy - len / 2));
-      sp.lineToPoint($.NSMakePoint(sx, sy + len / 2));
-      sp.stroke;
-    };
-    sparkle(cx + r * 0.5, ballY + r * 0.6, 3);
-    sparkle(cx - r * 0.6, ballY + r * 0.5, 3);
-    sparkle(cx + r * 0.1, ballY + r * 0.9, 2);
-  } else {
-    // 張開的眼睛（hearing / working / sad / 預設）
-    let eY = eyeY;
-    let eR = eyeR;
-    let eH = eR;
-    if (expr === 'hearing') { eR *= (1 + level * 0.2); } // 音量越大眼越圓
-    if (expr === 'working') { eY += 3; eR *= 0.75; }      // 皺眉向上看、眼收細
-    if (expr === 'sad') { eY -= 3; eR *= 0.8; eH = eR * 0.8; } // 下垂、壓扁
-    darkColor.set;
-    for (const dx of [-eyeGap, eyeGap]) {
-      $.NSBezierPath.bezierPathWithOvalInRect(
-        $.NSMakeRect(cx + dx - eR, eY - eH, eR * 2, eH * 2)
-      ).fill;
-      drawEyeHighlight(cx + dx, eY, eR);
-    }
-    if (expr === 'working') {
-      // 思考中：三個小圓點上下錯落，像在發問
-      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 0.5).set;
-      const offsets = [-2, 0, 2];
-      for (let i = -1; i <= 1; i += 1) {
-        const dotR = 1.5;
-        const dotY = eyeY - eyeR - 5 + offsets[i + 1];
-        $.NSBezierPath.bezierPathWithOvalInRect(
-          $.NSMakeRect(cx + i * 5 - dotR, dotY - dotR, dotR * 2, dotR * 2)
-        ).fill;
-      }
-      // 挑起的眉頭：右眉較高較拱
-      const browColor = $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 0.7);
-      browColor.set;
-      const leftBrow = $.NSBezierPath.bezierPath;
-      leftBrow.setLineWidth(1.5);
-      leftBrow.setLineCapStyle(1);
-      leftBrow.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
-        $.NSMakePoint(cx - eyeGap, eY + eR + 2.5), eyeR * 0.6, 20, 160, false
-      );
-      leftBrow.stroke;
-      const rightBrow = $.NSBezierPath.bezierPath;
-      rightBrow.setLineWidth(1.5);
-      rightBrow.setLineCapStyle(1);
-      rightBrow.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
-        $.NSMakePoint(cx + eyeGap, eY + eR + 4), eyeR * 0.6, 30, 150, false
-      );
-      rightBrow.stroke;
-    }
-    if (expr === 'sad') {
-      // 難過：波浪皺嘴（∩ 型弧線）
-      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 0.6).set;
-      const frown = $.NSBezierPath.bezierPath;
-      frown.setLineWidth(1.5);
-      frown.setLineCapStyle(1);
-      frown.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
-        $.NSMakePoint(cx, ballY - r * 0.55), r * 0.28, 20, 160, false
-      );
-      frown.stroke;
-      // 右上角一滴汗
-      $.NSColor.colorWithSRGBRedGreenBlueAlpha(180 / 255, 220 / 255, 1, 0.5).set;
-      $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx + r * 0.6 - 1, ballY + r * 0.5 - 2, 2, 4)).fill;
-    }
-    if (!expr) {
-      // 預設：很淡的一點微笑，安靜時也友善
-      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 0.3).set;
-      const rest = $.NSBezierPath.bezierPath;
-      rest.setLineWidth(1.5);
-      rest.setLineCapStyle(1);
-      rest.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
-        $.NSMakePoint(cx, eyeY - eyeR * 1.8), eyeR * 1.1, 200, 340, false
-      );
-      rest.stroke;
-    }
-  }
+  drawCapsule(cx - eyeGap, leftEyeY, ew, eh);
+  drawCapsule(cx + eyeGap, rightEyeY, ew, eh);
 
   img.unlockFocus;
   return img;
