@@ -115,7 +115,7 @@ let mascotPanel = null;
 let mascotVisible = false;
 let mascotExpr = null;
 let mascotTimer = null;
-const MASCOT_SIZE = { small: 34, medium: 48 };
+const MASCOT_SIZE = { small: 48, medium: 64 };
 let mascotItem = null;
 const mascotSizeItems = {};
 
@@ -1096,8 +1096,8 @@ function mascotImage(expr, level = 0) {
   ).fill;
 
   const dark = $.NSColor.colorWithSRGBRedGreenBlueAlpha(15 / 255, 20 / 255, 35 / 255, 1);
-  const baseEw = r * 0.30;
-  const baseEh = r * 0.20;
+  const baseEw = r * 0.42;
+  const baseEh = r * 0.22;
   const eyeGap = r * 0.38;
   const eyeBaseY = ballY + r * 0.08;
   let ew = baseEw, eh = baseEh, eyeLift = 0, tilt = 1;
