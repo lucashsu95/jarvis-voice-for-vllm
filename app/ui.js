@@ -1381,7 +1381,7 @@ ObjC.registerSubclass({
     'mascotToggle:': { types: ['void', ['id']], implementation() { mascotToggle(); } },
     'mascotSizeSmall:': { types: ['void', ['id']], implementation() { mascotSizePick('small'); } },
     'mascotSizeMedium:': { types: ['void', ['id']], implementation() { mascotSizePick('medium'); } },
-    'mascotTick:': { types: ['void', ['id']], implementation() { mascotTick(); } },
+    'mascotTrack:': { types: ['void', ['id']], implementation() { mascotTrack(); } },
     'mascotFadeHide:': { types: ['void', ['id']], implementation() { if (mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; } if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; } } },
   },
 });
