@@ -109,6 +109,15 @@ let aiOffItem = null;
 const aiItems = {};
 let autoFocusItem = null;
 let commandsItem = null;
+// ── 小夥伴球球（mascot）：小框旁邊的小球，跟著小框走、隨音量晃 ──
+let mascot = { on: true, size: 'small' };
+let mascotPanel = null;
+let mascotVisible = false;
+let mascotExpr = null;
+let mascotTimer = null;
+const MASCOT_SIZE = { small: 34, medium: 48 };
+let mascotItem = null;
+const mascotSizeItems = {};
 
 const statePath = (name) => `${BUILD.state}/${name}`;
 const fm = () => $.NSFileManager.defaultManager;
@@ -375,6 +384,10 @@ function refreshSettings() {
   voiceprintItem.setTitle(vp.enabled && !vp.ready ? t('只聽我的聲音（聲紋模型沒裝，重跑 install.sh）', 'Only my voice (model missing; rerun install.sh)')
     : t('只聽我的聲音（聲紋）', 'Only my voice (voiceprint)'));
   voiceprintResetItem.setEnabled(!!(vp.enabled && vp.ready && vp.enrolled));
+  if (mascotItem) {
+    mascotItem.setState(mascot.on ? 1 : 0);
+    for (const [size, item] of Object.entries(mascotSizeItems)) item.setState(mascot.size === size ? 1 : 0);
+  }
   commandsItem.setTitle(settings.decider
     ? t(`語音指令（直接操作 app，${settings.decider} 決策）`, `Voice commands (operate apps, decided by ${settings.decider})`)
     : t('語音指令（直接操作 app）', 'Voice commands (operate apps)'));
@@ -693,6 +706,102 @@ function ensureFile(path, text) {
   if (!fm().fileExistsAtPath(path)) $(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
 }
 
+// 球球的設定：on／size 存進 mascot.json，啟動時讀、改時寫
+function mascotLoad() {
+  try {
+    const text = $.NSString.stringWithContentsOfFileEncodingError(statePath('mascot.json'), $.NSUTF8StringEncoding, null);
+    if (text && !text.isNil()) {
+      const saved = JSON.parse(ObjC.unwrap(text));
+      if (typeof saved.on === 'boolean') mascot.on = saved.on;
+      if (saved.size === 'small' || saved.size === 'medium') mascot.size = saved.size;
+    }
+  } catch (err) { /* 檔案壞了就用預設 */ }
+}
+
+function mascotSave() {
+  $(`${JSON.stringify(mascot, null, 2)}\n`).writeToFileAtomicallyEncodingError(statePath('mascot.json'), true, $.NSUTF8StringEncoding, null);
+}
+
+// 選單「球球」開關：開關、存檔、更新畫面、刷新選單勾選
+function mascotToggle() {
+  mascot.on = !mascot.on;
+  mascotSave();
+  mascotUpdate();
+  refreshSettings();
+}
+
+// 選單「球球大小」：選小或中，存檔、更新畫面、刷新選單勾選
+function mascotSizePick(size) {
+  mascot.size = size;
+  mascotSave();
+  mascotUpdate();
+  refreshSettings();
+}
+
+// 球球生命週期：小框狀態 → 表情，決定顯示／隱藏，說話時跑 bounce timer
+function mascotUpdate(e, level = 0) {
+  if (!mascot.on) {
+    if (mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; }
+    if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
+    return;
+  }
+  // 沒在聽就不顯示
+  if (!e || e.state === 'hide' || (view.state !== 'listening' && view.state !== 'error')) {
+    if (mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; }
+    if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
+    return;
+  }
+  // 決定表情
+  const expr = e.state === 'hearing' ? 'hearing'
+    : (e.state === 'working' || e.state === 'command') ? 'working'
+    : (e.state === 'pasted' || e.state === 'done') ? 'happy'
+    : (e.state === 'failed' || e.state === 'nofield' || e.state === 'error') ? 'sad'
+    : null;
+  mascotExpr = expr;
+  // 確保 panel 存在
+  if (!mascotPanel) makeMascot();
+  // 更新圖片
+  const size = MASCOT_SIZE[mascot.size] || 34;
+  const img = mascotImage(expr, level);
+  // NSImageView 是 panel 的 content view
+  const imgView = mascotPanel.contentView;
+  imgView.setImage(img);
+  // 如果大小變了（小→中），調整 panel 大小
+  if (Math.round(mascotPanel.frame.size.width) !== size) {
+    const f = mascotPanel.frame;
+    const scale = size / f.size.width;
+    mascotPanel.setFrameDisplay($.NSMakeRect(
+      f.origin.x + f.size.width / 2 - size / 2,
+      f.origin.y + f.size.height / 2 - size / 2,
+      size, size
+    ), true);
+  }
+  // 顯示（淡入）
+  if (!mascotVisible) {
+    mascotPanel.setAlphaValue(0);
+    mascotPanel.orderFrontRegardless;
+    mascotPanel.animator.setAlphaValue(1);
+    mascotVisible = true;
+  }
+  // 說話中：啟動 bounce timer（每 0.1 秒重畫）
+  if (expr === 'hearing') {
+    if (!mascotTimer) {
+      mascotTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.1, controller, 'mascotTick:', $(), true);
+    }
+  } else {
+    if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
+  }
+}
+
+function mascotTick() {
+  if (!mascotPanel || !mascotVisible) return;
+  if (mascotExpr !== 'hearing') return;
+  // 用目前的 level 重畫（bounce）
+  const size = MASCOT_SIZE[mascot.size] || 34;
+  const img = mascotImage('hearing', level);
+  mascotPanel.contentView.setImage(img);
+}
+
 function openInTextEdit(path) {
   $.NSWorkspace.sharedWorkspace.openFileWithApplication(path, 'TextEdit');
 }
@@ -785,6 +894,59 @@ function makeBubble() {
   bubblePanel = panel;
 }
 
+function makeMascot() {
+  const size = MASCOT_SIZE[mascot.size] || 34;
+  // 跟 makeBubble 同樣的無邊框浮動視窗，但更小、不搶焦點、滑鼠點穿
+  const panel = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, size, size), 1 << 7, 2, false);
+  panel.setFloatingPanel(true);
+  panel.setLevel(101);
+  panel.setOpaque(false);
+  panel.setBackgroundColor($.NSColor.clearColor);
+  panel.setHasShadow(false); // 不加陰影（不礙事）
+  panel.setIgnoresMouseEvents(true);
+  panel.setHidesOnDeactivate(false);
+  panel.setCollectionBehavior((1 << 0) | (1 << 4) | (1 << 6) | (1 << 8));
+  panel.setAppearance($.NSAppearance.appearanceNamed('NSAppearanceNameDarkAqua'));
+  // 內容是一個 NSImageView（不是自訂 view）
+  const imgView = $.NSImageView.alloc.initWithFrame($.NSMakeRect(0, 0, size, size));
+  imgView.setImageScaling(0); // NSImageScaleProportionallyUpOrDown
+  imgView.setEditable(false);
+  imgView.setAllowsCutCopyPaste(false);
+  panel.setContentView(imgView);
+  mascotPanel = panel;
+}
+
+function placeMascot(boxFrame) {
+  if (!mascotPanel) return;
+  const size = MASCOT_SIZE[mascot.size] || 34;
+  const gap = 6;
+  // 找到小框所在的那顆螢幕（多螢幕支援，跟 placeBubble 同一套邏輯）
+  const screens = $.NSScreen.screens;
+  let screen = $.NSScreen.mainScreen;
+  const boxCx = boxFrame.origin.x + boxFrame.size.width / 2;
+  const boxCy = boxFrame.origin.y + boxFrame.size.height / 2;
+  for (let i = 0; i < screens.count; i += 1) {
+    const f = screens.objectAtIndex(i).frame;
+    if (boxCx >= f.origin.x && boxCx <= f.origin.x + f.size.width &&
+        boxCy >= f.origin.y && boxCy <= f.origin.y + f.size.height) {
+      screen = screens.objectAtIndex(i);
+      break;
+    }
+  }
+  const vf = screen.visibleFrame;
+  // 預設放小框右邊，垂直置中
+  let x = boxFrame.origin.x + boxFrame.size.width + gap;
+  const y = boxFrame.origin.y + boxFrame.size.height / 2 - size / 2;
+  // 右邊放不下就翻到左邊
+  if (x + size > vf.origin.x + vf.size.width - 8) {
+    x = boxFrame.origin.x - size - gap;
+  }
+  // 2D 夾進 visibleFrame（跟 placeBubble 末尾的 clamp 一樣）
+  const clampedX = Math.min(Math.max(x, vf.origin.x + 4), vf.origin.x + vf.size.width - size - 4);
+  const clampedY = Math.min(Math.max(y, vf.origin.y + 4), vf.origin.y + vf.size.height - size - 4);
+  mascotPanel.setFrameDisplay($.NSMakeRect(clampedX, clampedY, size, size), true);
+}
+
 const BUBBLE_TONES = { blue: 'systemBlueColor', green: 'systemGreenColor', orange: 'systemOrangeColor', red: 'systemRedColor' };
 
 // 小框放哪：at 是左上角原點的螢幕座標（輔助使用的座標），換成 Cocoa 的左下角原點。
@@ -860,12 +1022,20 @@ function showBubble(e) {
   bubbleVisible = true;
   if (bubbleTimer) { bubbleTimer.invalidate; bubbleTimer = null; }
   bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(e.holdMs ? e.holdMs / 1000 : BUBBLE_IDLE_S, controller, 'bubbleFade:', $(), false);
+  // 球球：跟著小框走
+  if (mascot.on) {
+    placeMascot(bubblePanel.frame);
+    mascotUpdate(e, level);
+  }
 }
 
 function hideBubble() {
   if (bubbleTimer) { bubbleTimer.invalidate; bubbleTimer = null; }
   if (bubblePanel && bubbleVisible) { bubbleSpinner.stopAnimation($()); bubblePanel.orderOut($()); }
   bubbleVisible = false;
+  // 球球跟著小框藏起來
+  if (mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; }
+  if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
 }
 
 // 時間到：淡出 0.25 秒再收起來
@@ -873,6 +1043,11 @@ function fadeBubble() {
   bubbleTimer = null;
   if (!bubblePanel || !bubbleVisible) return;
   bubblePanel.animator.setAlphaValue(0);
+  // 球球也淡出
+  if (mascotPanel && mascotVisible) {
+    mascotPanel.animator.setAlphaValue(0);
+    $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.3, controller, 'mascotFadeHide:', $(), false);
+  }
   bubbleTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.3, controller, 'bubbleHide:', $(), false);
 }
 
@@ -889,8 +1064,109 @@ let glowCursor = null;
 let glowFollowTimer = null;
 let glowTarget = null;
 let glowTargetTimer = null;
+let glowPulseStart = Date.now();
 
-function glowPanel(x, y, w, h) {
+// 發光的框框：先離屏畫到一張 NSImage（NSBezierPath 描邊＋同色陰影當光暈），再放進 NSImageView 顯示。
+// 不能用 CALayer 的 setBorderColor/setShadowColor：JXA 把 NSColor 的 CGColor 傳進 CoreAnimation
+// 會 SIGTRAP 閃退（crash report：-[CALayer setBorderColor:] ← CAValueEqual ← CFEqual ← __CF_IS_OBJC）。
+// 也不用自訂 NSView：JXA override drawRect: 得把參數型別對成 NSRect，很容易寫錯；NSImage 離屏畫最穩。
+function glowRingImage(w, h, ring) {
+  const img = $.NSImage.alloc.initWithSize($.NSMakeSize(w, h));
+  img.lockFocus;
+  const r = GLOW_RGB[0];
+  const g = GLOW_RGB[1];
+  const bl = GLOW_RGB[2];
+  const sh = $.NSShadow.shadow;
+  sh.setShadowColor($.NSColor.colorWithSRGBRedGreenBlueAlpha(r, g, bl, 0.9));
+  sh.setShadowOffset($.NSMakeSize(0, 0));
+  sh.setShadowBlurRadius(ring.shadow || 0);
+  sh.set;
+  const radius = ring.radius || 0;
+  const ringPath = $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(ring.pad, ring.pad, w - ring.pad * 2, h - ring.pad * 2), radius, radius);
+  ringPath.setLineWidth(ring.width);
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(r, g, bl, 1).set;
+  ringPath.stroke;
+  img.unlockFocus;
+  return img;
+}
+
+// 球球表情圖（離屏畫成 NSImage）：跟 glowRingImage 同一套 crash-safe 模式，只碰 NSImage.lockFocus + NSBezierPath + NSColor，
+// 不碰 CALayer / CGColor / setBorderColor / setShadowColor（JXA 把 NSColor 的 CGColor 傳進 CoreAnimation 會 SIGTRAP 閃退）。
+// 純函數：輸出只由 (expr, level) 與 mascot.size 決定，沒有副作用。
+function mascotImage(expr, level = 0) {
+  const size = MASCOT_SIZE[mascot.size] || 34;
+  const img = $.NSImage.alloc.initWithSize($.NSMakeSize(size, size));
+  img.lockFocus;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2 - 2;
+  const bounce = (expr === 'hearing') ? Math.round(level * 6) : 0;
+  const ballY = cy + bounce;
+
+  // 球體：品牌藍 #0091FF
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(0, 145 / 255, 1, 0.85).set;
+  $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - r, ballY - r, r * 2, r * 2)).fill;
+
+  // 左上角白色高光：做出 3D 光澤
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 1, 1, 0.25).set;
+  const hlR = r * 0.4;
+  $.NSBezierPath.bezierPathWithOvalInRect($.NSMakeRect(cx - r * 0.5, ballY + r * 0.2, hlR * 2, hlR * 1.5)).fill;
+
+  // 眼睛（依表情變化）
+  const eyeR = r * 0.15;
+  const eyeGap = r * 0.35;
+  const eyeY = ballY + r * 0.15;
+  const darkColor = $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 1);
+
+  if (expr === 'happy') {
+    // 開心眨眼：兩條 ∪ 型弧線（只描邊、不填色）
+    darkColor.set;
+    for (const dx of [-eyeGap, eyeGap]) {
+      const path = $.NSBezierPath.bezierPath;
+      path.setLineWidth(2);
+      path.setLineCapStyle(1);
+      path.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(
+        $.NSMakePoint(cx + dx, eyeY), eyeR * 0.8, 200, 340, false
+      );
+      path.stroke;
+    }
+  } else {
+    // 張開的眼睛（hearing / working / sad / 預設）
+    let eY = eyeY;
+    let eR = eyeR;
+    if (expr === 'working') { eY += 2; eR *= 0.8; }
+    if (expr === 'sad') { eY -= 2; eR *= 0.85; }
+    darkColor.set;
+    for (const dx of [-eyeGap, eyeGap]) {
+      $.NSBezierPath.bezierPathWithOvalInRect(
+        $.NSMakeRect(cx + dx - eR, eY - eR, eR * 2, eR * 2)
+      ).fill;
+    }
+    if (expr === 'working') {
+      // 思考中：眼睛下方一排三個小圓點
+      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 0.5).set;
+      for (let i = -1; i <= 1; i += 1) {
+        const dotR = 1.5;
+        $.NSBezierPath.bezierPathWithOvalInRect(
+          $.NSMakeRect(cx + i * 5 - dotR, eyeY - eyeR - 6, dotR * 2, dotR * 2)
+        ).fill;
+      }
+    }
+    if (expr === 'sad') {
+      // 難過：眼睛下方一個小「o」型嘴
+      $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.1, 0.1, 0.15, 0.6).set;
+      const mouthR = 2.5;
+      $.NSBezierPath.bezierPathWithOvalInRect(
+        $.NSMakeRect(cx - mouthR, eyeY - eyeR * 2 - 4, mouthR * 2, mouthR * 2)
+      ).fill;
+    }
+  }
+
+  img.unlockFocus;
+  return img;
+}
+
+function glowPanel(x, y, w, h, ring) {
   const panel = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(x, y, w, h), 1 << 7, 2, false);
   panel.setFloatingPanel(true);
   panel.setLevel(101);
@@ -900,49 +1176,24 @@ function glowPanel(x, y, w, h) {
   panel.setIgnoresMouseEvents(true);
   panel.setHidesOnDeactivate(false);
   panel.setCollectionBehavior((1 << 0) | (1 << 4) | (1 << 6) | (1 << 8));
-  const view = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, w, h));
-  view.setWantsLayer(true);
-  panel.setContentView(view);
+  const imgView = $.NSImageView.alloc.initWithFrame($.NSMakeRect(0, 0, w, h));
+  imgView.setImageScaling(0);
+  imgView.setImage(glowRingImage(w, h, ring));
+  panel.setContentView(imgView);
   return panel;
-}
-
-// 外框加同色的陰影＝發光；pad：框框離視窗邊多遠（陰影要有地方畫）；pulse：一亮一暗（最暗留 55%，太淡看不出來）
-function glowRing(panel, { pad, width, radius, shadow, pulse }) {
-  const color = $.NSColor.colorWithSRGBRedGreenBlueAlpha(GLOW_RGB[0], GLOW_RGB[1], GLOW_RGB[2], 1).CGColor;
-  const size = panel.frame.size;
-  const ring = $.CALayer.layer;
-  ring.setFrame($.NSMakeRect(pad, pad, size.width - pad * 2, size.height - pad * 2));
-  ring.setBorderWidth(width);
-  ring.setBorderColor(color);
-  ring.setCornerRadius(radius);
-  ring.setShadowColor(color);
-  ring.setShadowOpacity(1);
-  ring.setShadowRadius(shadow);
-  ring.setShadowOffset($.NSMakeSize(0, 0));
-  if (pulse) {
-    const anim = $.CABasicAnimation.animationWithKeyPath('opacity');
-    anim.setFromValue($.NSNumber.numberWithDouble(1));
-    anim.setToValue($.NSNumber.numberWithDouble(0.55));
-    anim.setDuration(0.9);
-    anim.setAutoreverses(true);
-    anim.setRepeatCount(1e9);
-    ring.addAnimationForKey(anim, 'pulse');
-  }
-  panel.contentView.layer.addSublayer(ring);
 }
 
 function glowOn() {
   if (glowEdges.length) return;
+  glowPulseStart = Date.now();
   const screens = $.NSScreen.screens;
   for (let i = 0; i < screens.count; i += 1) {
     const f = screens.objectAtIndex(i).frame;
-    const edge = glowPanel(f.origin.x, f.origin.y, f.size.width, f.size.height);
-    glowRing(edge, { pad: 0, width: 6, radius: 0, shadow: 14, pulse: true });
+    const edge = glowPanel(f.origin.x, f.origin.y, f.size.width, f.size.height, { pad: 0, width: 6, radius: 0, shadow: 14 });
     edge.orderFrontRegardless;
     glowEdges.push(edge);
   }
-  glowCursor = glowPanel(0, 0, GLOW_CURSOR, GLOW_CURSOR);
-  glowRing(glowCursor, { pad: 8, width: 3, radius: (GLOW_CURSOR - 16) / 2, shadow: 6, pulse: true });
+  glowCursor = glowPanel(0, 0, GLOW_CURSOR, GLOW_CURSOR, { pad: 8, width: 3, radius: (GLOW_CURSOR - 16) / 2, shadow: 6 });
   glowFollow();
   glowCursor.orderFrontRegardless;
   glowFollowTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.03, controller, 'glowFollow:', $(), true);
@@ -953,6 +1204,11 @@ function glowFollow() {
   if (!glowCursor) return;
   const p = $.NSEvent.mouseLocation;
   glowCursor.setFrameOrigin($.NSMakePoint(p.x - GLOW_CURSOR / 2, p.y - GLOW_CURSOR / 2));
+  // 一亮一暗（最暗留 55%）：改視窗透明度就好，不用重畫（0.9 秒到最暗、1.8 秒一個循環）
+  const t = (Date.now() - glowPulseStart) / 1000;
+  const a = 0.55 + 0.45 * (0.5 + 0.5 * Math.cos((2 * Math.PI * t) / 1.8));
+  glowCursor.setAlphaValue(a);
+  for (let i = 0; i < glowEdges.length; i += 1) glowEdges[i].setAlphaValue(a);
 }
 
 function glowShowTarget(frame) {
@@ -960,8 +1216,7 @@ function glowShowTarget(frame) {
   if (!frame || !(frame.w > 0) || !(frame.h > 0)) return;
   const fullH = $.NSScreen.screens.objectAtIndex(0).frame.size.height;
   const pad = GLOW_TARGET_PAD;
-  glowTarget = glowPanel(frame.x - pad, fullH - (frame.y + frame.h) - pad, frame.w + pad * 2, frame.h + pad * 2);
-  glowRing(glowTarget, { pad, width: 3, radius: 6, shadow: 10, pulse: false });
+  glowTarget = glowPanel(frame.x - pad, fullH - (frame.y + frame.h) - pad, frame.w + pad * 2, frame.h + pad * 2, { pad, width: 3, radius: 6, shadow: 10 });
   glowTarget.orderFrontRegardless;
   glowTargetTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(GLOW_TARGET_S, controller, 'glowTargetHide:', $(), false);
 }
@@ -997,6 +1252,10 @@ function onLine(line) {
     if (view.state !== 'listening') { hearing = false; working = false; }
     if (view.state !== 'listening' && view.state !== 'error') hideBubble();
     if (view.state !== 'listening') glowOff(); // 暫停、出錯：代理會停，光也收掉
+    if (view.state !== 'listening') {
+      if (mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; }
+      if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
+    }
     refresh();
   } else if (event.type === 'bubble') {
     showBubble(event);
@@ -1075,6 +1334,8 @@ function startListener() {
 
 function quitApp() {
   quitting = true;
+  if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; }
+  if (mascotPanel && mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; }
   if (task) task.terminate;
   if (loginTask) loginTask.terminate;
   if (keyTask) keyTask.terminate;
@@ -1142,6 +1403,11 @@ ObjC.registerSubclass({
     'bubbleHide:': { types: ['void', ['id']], implementation() { bubbleTimer = null; hideBubble(); } },
     'glowFollow:': { types: ['void', ['id']], implementation() { glowFollow(); } },
     'glowTargetHide:': { types: ['void', ['id']], implementation() { glowTargetTimer = null; glowHideTarget(); } },
+    'mascotToggle:': { types: ['void', ['id']], implementation() { mascotToggle(); } },
+    'mascotSizeSmall:': { types: ['void', ['id']], implementation() { mascotSizePick('small'); } },
+    'mascotSizeMedium:': { types: ['void', ['id']], implementation() { mascotSizePick('medium'); } },
+    'mascotTick:': { types: ['void', ['id']], implementation() { mascotTick(); } },
+    'mascotFadeHide:': { types: ['void', ['id']], implementation() { if (mascotVisible) { mascotPanel.orderOut($()); mascotVisible = false; } if (mascotTimer) { mascotTimer.invalidate; mascotTimer = null; } } },
   },
 });
 
@@ -1154,6 +1420,7 @@ function menuItem(title, action) {
 function startUI() {
   fm().createDirectoryAtPathWithIntermediateDirectoriesAttributesError(BUILD.state, true, $(), null);
   controller = $.VoiceDictationController.alloc.init;
+  mascotLoad();
   // 新的選單列圖示預設排在最左邊，瀏海機型圖示一多就被擠到瀏海後面看不到：
   // 第一次先放在離螢幕右邊 260 點的位置；之後使用者按 Cmd 拖過的位置系統會自己記住
   const positionKey = 'NSStatusItem Preferred Position VoiceDictation';
@@ -1202,6 +1469,19 @@ function startUI() {
   menu.addItem(voiceprintItem);
   voiceprintResetItem = menuItem(t('重錄我的聲紋', 'Re-learn my voice'), 'resetVoiceprint:');
   menu.addItem(voiceprintResetItem);
+  menu.addItem($.NSMenuItem.separatorItem);
+  // 球球：小框旁的小球（開關＋大小子選單）
+  mascotItem = menuItem(t('球球（小框旁的小球）', 'Ball mascot (next to the bubble)'), 'mascotToggle:');
+  menu.addItem(mascotItem);
+  const mascotSizeItem = menuItem(t('球球大小', 'Ball size'), null);
+  const mascotSizeMenu = $.NSMenu.alloc.init;
+  mascotSizeMenu.setAutoenablesItems(false);
+  for (const [size, label] of [['small', t('小', 'Small')], ['medium', t('中', 'Medium')]]) {
+    mascotSizeItems[size] = menuItem(label, size === 'small' ? 'mascotSizeSmall:' : 'mascotSizeMedium:');
+    mascotSizeMenu.addItem(mascotSizeItems[size]);
+  }
+  mascotSizeItem.setSubmenu(mascotSizeMenu);
+  menu.addItem(mascotSizeItem);
   menu.addItem($.NSMenuItem.separatorItem);
   menu.addItem(menuItem(t('編輯專有名詞…', 'Edit vocabulary…'), 'openVocabulary:'));
   menu.addItem(menuItem(t('編輯設定檔…', 'Edit config…'), 'openConfig:'));
