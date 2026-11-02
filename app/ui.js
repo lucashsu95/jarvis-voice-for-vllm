@@ -1106,76 +1106,49 @@ function mascotImage(expr, level = 0) {
   const hearing = (expr === 'hearing');
   const bounce = hearing ? Math.round(level * 3) : (expr === 'happy' ? 1 : 0);
   const ballY = cy + bounce;
-
-  // 卵石形身體：略扁的橢圓（寬 > 高），深色磨砂
-  const flat = 0.88; // 扁平比
+  const flat = 0.88;
   const bodyRx = r;
   const bodyRy = hearing ? r * flat * (1 + (1 - level) * 0.06 - level * 0.04) : r * flat;
-  const bodyW = bodyRx * 2;
-  const bodyH = bodyRy * 2;
 
-  // 深色卵石：接近黑的深藍
-  $.NSColor.colorWithSRGBRedGreenBlueAlpha(15 / 255, 20 / 255, 35 / 255, 1).set;
-  const bodyPath = $.NSBezierPath.bezierPathWithOvalInRect(
-    $.NSMakeRect(cx - bodyRx, ballY - bodyRy, bodyW, bodyH)
-  );
-  bodyPath.fill;
-
-  // 極淡的頂部形體提示（0.08 alpha，幾乎看不出來）
-  $.NSColor.colorWithSRGBRedGreenBlueAlpha(50 / 255, 60 / 255, 80 / 255, 0.08).set;
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(245 / 255, 245 / 255, 248 / 255, 1).set;
   $.NSBezierPath.bezierPathWithOvalInRect(
-    $.NSMakeRect(cx - bodyRx * 0.8, ballY + bodyRy * 0.15, bodyW * 0.8, bodyH * 0.5)
+    $.NSMakeRect(cx - bodyRx, ballY - bodyRy, bodyRx * 2, bodyRy * 2)
   ).fill;
 
-  // 白色膠囊眼睛（唯一的臉部特徵）
-  const white = $.NSColor.colorWithSRGBRedGreenBlueAlpha(1, 1, 1, 1);
+  $.NSColor.colorWithSRGBRedGreenBlueAlpha(220 / 255, 220 / 255, 228 / 255, 0.3).set;
+  $.NSBezierPath.bezierPathWithOvalInRect(
+    $.NSMakeRect(cx - bodyRx * 0.8, ballY - bodyRy * 0.5, bodyRx * 1.6, bodyRy)
+  ).fill;
+
+  const dark = $.NSColor.colorWithSRGBRedGreenBlueAlpha(15 / 255, 20 / 255, 35 / 255, 1);
   const baseEw = r * 0.30;
   const baseEh = r * 0.20;
   const eyeGap = r * 0.38;
   const eyeBaseY = ballY + r * 0.08;
-
-  let ew = baseEw;
-  let eh = baseEh;
-  let eyeLift = 0;
-  let tiltDiff = 0; // 右眼比左眼高的像素（>0 = 往上看，<0 = 往下看）
+  let ew = baseEw, eh = baseEh, eyeLift = 0, tilt = 1;
 
   if (expr === 'hearing') {
     eh = baseEh * (1 + level * 0.3);
   } else if (expr === 'working') {
-    ew = baseEw * 0.85;
-    eyeLift = 3;
-    tiltDiff = 1;
+    ew = baseEw * 0.85; eyeLift = 3; tilt = 1;
   } else if (expr === 'happy') {
-    eh = baseEh * 0.30;
-    ew = baseEw * 1.10;
-    eyeLift = 1;
+    eh = baseEh * 0.30; ew = baseEw * 1.10; eyeLift = 1;
   } else if (expr === 'sad') {
-    ew = baseEw * 0.85;
-    eh = baseEh * 0.80;
-    eyeLift = -3;
-    tiltDiff = -1;
-  } else {
-    // 預設：右眼微高 1px（往右上看）
-    tiltDiff = 1;
+    ew = baseEw * 0.85; eh = baseEh * 0.80; eyeLift = -3; tilt = -1;
   }
 
-  const leftEyeY = eyeBaseY + eyeLift;
-  const rightEyeY = eyeBaseY + eyeLift + tiltDiff;
-
-  const drawCapsule = function (ex, ey, w, h) {
-    const rad = h / 2;
-    const rect = $.NSMakeRect(ex - w / 2, ey - h / 2, w, h);
-    white.set;
-    $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius(rect, rad, rad).fill;
+  dark.set;
+  const cap = (ex, ey, w, h) => {
+    $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius(
+      $.NSMakeRect(ex - w / 2, ey - h / 2, w, h), h / 2, h / 2
+    ).fill;
   };
-
-  drawCapsule(cx - eyeGap, leftEyeY, ew, eh);
-  drawCapsule(cx + eyeGap, rightEyeY, ew, eh);
+  cap(cx - eyeGap, eyeBaseY + eyeLift, ew, eh);
+  cap(cx + eyeGap, eyeBaseY + eyeLift + tilt, ew, eh);
 
   img.unlockFocus;
   return img;
 }
-
 function glowPanel(x, y, w, h, ring) {
   const panel = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(x, y, w, h), 1 << 7, 2, false);
   panel.setFloatingPanel(true);
