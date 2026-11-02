@@ -799,10 +799,21 @@ function mascotTrack() {
   if (!mascotPanel || !mascotVisible) return;
   const size = MASCOT_SIZE[mascot.size] || 48;
   if (mascotAgentMode) {
+    // 操作模式：跟滑鼠走
     const mouse = $.NSEvent.mouseLocation;
     const x = mouse.x + 14;
     const y = mouse.y - size - 10;
     mascotPanel.setFrameDisplay($.NSMakeRect(x, y, size, size), true);
+  } else {
+    // 語音模式：固定在右下角
+    const vf = $.NSScreen.mainScreen.visibleFrame;
+    const x = vf.origin.x + vf.size.width - size - 16;
+    const y = vf.origin.y + 16;
+    const f = mascotPanel.frame;
+    // 只在位置差超過 2px 才移動（避免每 0.05s 重設同樣位置）
+    if (Math.abs(f.origin.x - x) > 2 || Math.abs(f.origin.y - y) > 2) {
+      mascotPanel.setFrameDisplay($.NSMakeRect(x, y, size, size), true);
+    }
   }
   if (mascotExpr === 'hearing') {
     mascotPanel.contentView.setImage(mascotImage('hearing', level));
