@@ -952,36 +952,11 @@ const BUBBLE_TONES = { blue: 'systemBlueColor', green: 'systemGreenColor', orang
 // 小框放哪：at 是左上角原點的螢幕座標（輔助使用的座標），換成 Cocoa 的左下角原點。
 // above：放在游標那行上面（已貼上、完成：剛貼的字從游標往右下長，放下面會蓋到）
 function placeBubble(at, w, h, above) {
-  const screens = $.NSScreen.screens;
-  const fullH = screens.objectAtIndex(0).frame.size.height;
-  let x;
-  let y;
-  let screen = $.NSScreen.mainScreen;
-  if (at) {
-    const px = at.x + Math.min(at.w, 40) / 2;
-    const py = fullH - at.y;
-    for (let i = 0; i < screens.count; i += 1) {
-      const f = screens.objectAtIndex(i).frame;
-      if (px >= f.origin.x && px <= f.origin.x + f.size.width && py >= f.origin.y && py <= f.origin.y + f.size.height) screen = screens.objectAtIndex(i);
-    }
-  }
+  const screen = $.NSScreen.mainScreen;
   const vf = screen.visibleFrame;
-  if (at && at.kind === 'caret') {
-    x = at.x - BUBBLE_PAD_X;
-    const below = fullH - (at.y + at.h) - 8 - h;
-    const over = fullH - at.y + 8;
-    y = above ? over : below; // 游標下面（像輸入法的候選字）
-    if (!above && y < vf.origin.y + 4) y = over; // 下面放不下：放上面
-    if (above && y + h > vf.origin.y + vf.size.height - 4) y = below;
-  } else if (at && at.kind === 'window') {
-    x = at.x + at.w / 2 - w / 2;
-    y = fullH - (at.y + at.h) + 56; // 視窗下方中間
-  } else {
-    x = vf.origin.x + vf.size.width / 2 - w / 2;
-    y = vf.origin.y + 80;
-  }
-  x = Math.min(Math.max(x, vf.origin.x + 8), vf.origin.x + vf.size.width - w - 8);
-  y = Math.min(Math.max(y, vf.origin.y + 8), vf.origin.y + vf.size.height - h - 8);
+  const pad = 16;
+  const x = vf.origin.x + vf.size.width - w - pad;
+  const y = vf.origin.y + pad;
   bubblePanel.setFrameDisplay($.NSMakeRect(x, y, w, h), true);
 }
 
