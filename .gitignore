@@ -2,3 +2,7 @@ node_modules/
 .claude-plugin/types/
 .DS_Store
 *.log
+.omo/
+.senpi/
+.tp_smoke.mjs
+CLAUDE.md
