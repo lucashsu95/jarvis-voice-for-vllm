@@ -114,6 +114,7 @@ let mascot = { on: true, size: 'small' };
 let mascotPanel = null;
 let mascotVisible = false;
 let mascotExpr = null;
+let mascotAgentMode = false;
 let mascotTimer = null;
 const MASCOT_SIZE = { small: 48, medium: 64 };
 let mascotItem = null;
@@ -758,6 +759,7 @@ function mascotUpdate(e, level = 0) {
     : (e.state === 'failed' || e.state === 'nofield' || e.state === 'error') ? 'sad'
     : null;
   mascotExpr = expr;
+  mascotAgentMode = (e.state === 'command');
   // 確保 panel 存在
   if (!mascotPanel) makeMascot();
   // 更新圖片
@@ -776,11 +778,11 @@ function mascotUpdate(e, level = 0) {
       size, size
     ), true);
   }
-  // 顯示（淡入）+ 定位到滑鼠旁
+  // 顯示（淡入）
   if (!mascotVisible) {
-    const mouse = $.NSEvent.mouseLocation;
-    const px = mouse.x + 14;
-    const py = mouse.y - size - 10;
+    const vf = $.NSScreen.mainScreen.visibleFrame;
+    const px = vf.origin.x + vf.size.width - size - 16;
+    const py = vf.origin.y + 16;
     mascotPanel.setFrameDisplay($.NSMakeRect(px, py, size, size), true);
     mascotPanel.setAlphaValue(0);
     mascotPanel.orderFrontRegardless;
@@ -796,10 +798,12 @@ function mascotUpdate(e, level = 0) {
 function mascotTrack() {
   if (!mascotPanel || !mascotVisible) return;
   const size = MASCOT_SIZE[mascot.size] || 48;
-  const mouse = $.NSEvent.mouseLocation;
-  const x = mouse.x + 14;
-  const y = mouse.y - size - 10;
-  mascotPanel.setFrameDisplay($.NSMakeRect(x, y, size, size), true);
+  if (mascotAgentMode) {
+    const mouse = $.NSEvent.mouseLocation;
+    const x = mouse.x + 14;
+    const y = mouse.y - size - 10;
+    mascotPanel.setFrameDisplay($.NSMakeRect(x, y, size, size), true);
+  }
   if (mascotExpr === 'hearing') {
     mascotPanel.contentView.setImage(mascotImage('hearing', level));
   }
